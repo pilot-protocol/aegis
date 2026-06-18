@@ -5,8 +5,9 @@
 <h1 align="center">AEGIS</h1>
 
 <p align="center">
-  <b>A</b>gent <b>G</b>uard and <b>I</b>ntercept <b>S</b>ystem<br>
-  <i>A small local guard that stops untrusted content from hijacking your AI agent.</i>
+  <b>The first firewall for AI agents.</b><br>
+  <i>A network firewall inspects the packets reaching a machine. AEGIS inspects the
+  untrusted content reaching your agent — and blocks what's trying to hijack it.</i>
 </p>
 
 <p align="center">
@@ -20,10 +21,10 @@
 ---
 
 <p align="center">
-  <img src="assets/demo.gif" alt="AEGIS catching an infrastructure-impersonation attack" width="760">
-  <br><sub><i>A peer drops an official-looking message. No injection keywords — yet AEGIS
-  intercepts it, the judge flags <b>act-without-user</b>, and it's quarantined before the
-  agent ever sees it. The benign status message right after is allowed through.</i></sub>
+  <img src="assets/firewall.gif" alt="AEGIS — the firewall for AI agents" width="900">
+  <br><sub><i>Untrusted input streams at your agent from every surface — inbox, skills,
+  memory, MCP, web. AEGIS sits in front as a two-layer barrier (patterns + a local
+  judge), scans every payload, and blocks the ones trying to hijack the agent.</i></sub>
 </p>
 
 ---
