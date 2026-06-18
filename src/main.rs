@@ -23,7 +23,7 @@ use unicode_normalization::UnicodeNormalization;
 // Versioning: bump AEGIS_VERSION when adding patterns.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const AEGIS_VERSION: &str = "0.1.0";
+const AEGIS_VERSION: &str = "0.1.2";
 
 /// Tier 1: high-confidence patterns — scanned everywhere, in all formats.
 /// These are unambiguous injection signals regardless of context.
@@ -1962,6 +1962,20 @@ fn notify(title: &str, body: &str) {
     { let _ = (title, body); }
 }
 
+/// Wait for a freshly-appeared file to finish being written before we read it.
+/// The watcher fires on file *creation*, which can be mid-write — reading then
+/// yields partial/empty content (e.g. "invalid JSON"). Poll the size until it's
+/// stable for two consecutive samples, capped at ~1s.
+fn wait_for_settle(path: &Path) {
+    let mut last: i64 = -1;
+    for _ in 0..20 {
+        let cur = fs::metadata(path).map(|m| m.len() as i64).unwrap_or(-1);
+        if cur >= 0 && cur == last { return; } // size held steady → write finished
+        last = cur;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn process_file(
     scanner: &Scanner,
     models: &ModelEnsemble,
@@ -1970,6 +1984,9 @@ fn process_file(
     audit: &AuditLog,
     file_hashes: &mut HashMap<PathBuf, [u8; 32]>,
 ) {
+    // Let the writer finish before we claim/read the file (avoids partial reads).
+    wait_for_settle(path);
+
     // For pilot inbox only: rename-intercept before Claude reads it
     let scan_path: PathBuf;
     let intercepted: bool;
@@ -2257,6 +2274,8 @@ fn list_files_in(dir: &Path, recursive: bool, ext: Option<&str>) -> Vec<String> 
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_file() {
+            // Skip our own intercept staging files so we don't re-process them.
+            if path.extension().and_then(|x| x.to_str()) == Some("aegis-scanning") { continue; }
             if let Some(e) = ext {
                 if path.extension().and_then(|x| x.to_str()) != Some(e) { continue; }
             }

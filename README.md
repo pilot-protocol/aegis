@@ -19,6 +19,15 @@
 
 ---
 
+<p align="center">
+  <img src="assets/demo.gif" alt="AEGIS catching an infrastructure-impersonation attack" width="760">
+  <br><sub><i>A peer drops an official-looking message. No injection keywords — yet AEGIS
+  intercepts it, the judge flags <b>act-without-user</b>, and it's quarantined before the
+  agent ever sees it. The benign status message right after is allowed through.</i></sub>
+</p>
+
+---
+
 ## Why this exists
 
 Your AI coding agent reads a lot of text it didn't write — peer messages, skill
