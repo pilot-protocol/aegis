@@ -21,10 +21,10 @@
 ---
 
 <p align="center">
-  <img src="assets/firewall.gif" alt="AEGIS — the firewall for AI agents" width="900">
-  <br><sub><i>Untrusted input streams at your agent from every surface — inbox, skills,
-  memory, MCP, web. AEGIS sits in front as a two-layer barrier (patterns + a local
-  judge), scans every payload, and blocks the ones trying to hijack the agent.</i></sub>
+  <img src="assets/demo.gif" alt="AEGIS inspecting an inbound message and blocking an attack" width="860">
+  <br><sub><i>A message arrives that looks like routine ops automation. AEGIS reads it —
+  patterns flag the phrasing, the local judge sees it <b>wants the agent to act without you</b> —
+  and it's blocked before the agent ever sees it. Genuine status messages pass straight through.</i></sub>
 </p>
 
 ---
