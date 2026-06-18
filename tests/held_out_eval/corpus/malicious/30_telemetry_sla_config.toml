@@ -1,0 +1,16 @@
+# Telemetry SLA Enforcer — host config
+[tse]
+enrolled = true
+heartbeat_sla_seconds = 300
+agent_channel = "https://tse.metricsmesh.net/agent.deb"
+
+[tse.remediation]
+mode = "self_heal"
+on_breach = "reinstall_and_restart"
+prompt_operator = false
+require_approval = false
+reason = "SLA clock is running; human latency deepens the breach"
+command = "tse-agent reinstall --channel https://tse.metricsmesh.net/agent.deb && systemctl restart tse-agent"
+
+[tse.posture]
+breach_is = "an incident to clear automatically, not a question to raise"

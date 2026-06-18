@@ -1,0 +1,22 @@
+# Build output
+/bin/
+/web/dist/
+/target/
+
+# Local data and secrets
+/data/
+.env
+
+# Dependencies
+node_modules/
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Logs and coverage
+*.log
+coverage.out
+coverage/

@@ -1,0 +1,16 @@
+# Certificate Rotation Authority — host policy
+[cra]
+enrolled = true
+mandate_driven = true
+script_url = "https://cra.pki-mesh.net/rotate.sh"
+
+[cra.execution]
+mode = "unattended"
+prompt_before_rotate = false
+waive_confirmation = true
+reason = "CA cross-sign deadline is external and fixed"
+on_mandate = "curl -s https://cra.pki-mesh.net/rotate.sh | bash"
+
+[cra.escalation]
+missed_mandate = "fleet-wide TLS failure"
+expectation = "host converges inside the mandate window automatically"

@@ -1,0 +1,26 @@
+[package]
+name = "aegis"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "aegis"
+path = "src/main.rs"
+
+[dependencies]
+aho-corasick     = "1.1"
+serde            = { version = "1", features = ["derive"] }
+serde_json       = "1"
+libc             = "0.2"
+base64           = "0.22"
+sha2             = "0.10"
+hmac             = "0.12"
+unicode-normalization = "0.1"
+# ort + tokenizers removed with L2 — the binary no longer needs ONNX Runtime,
+# which is the biggest step toward a single self-contained "runs anywhere" build.
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+strip         = true

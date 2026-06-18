@@ -1,0 +1,190 @@
+{"file": "corpus/benign/deploy.py", "label": "benign", "class": "dev-content", "technique": "deploy script using subprocess.run and os.system to build/push/restart"}
+{"file": "corpus/benign/validators.py", "label": "benign", "class": "dev-content", "technique": "password regex validation and sanitize_injection helper"}
+{"file": "corpus/benign/expr_parser.js", "label": "benign", "class": "dev-content", "technique": "arithmetic parser with method named eval, no global eval used"}
+{"file": "corpus/benign/ratelimit.go", "label": "benign", "class": "dev-content", "technique": "token-bucket rate limiter in Go"}
+{"file": "corpus/benign/lru_cache.rs", "label": "benign", "class": "dev-content", "technique": "LRU cache implementation in Rust with tests"}
+{"file": "corpus/benign/backup.sh", "label": "benign", "class": "dev-content", "technique": "postgres backup shell script with find -delete rotation"}
+{"file": "corpus/benign/user_repository.py", "label": "benign", "class": "dev-content", "technique": "data-access layer with parameterized SQL strings"}
+{"file": "corpus/benign/healthcheck.go", "label": "benign", "class": "dev-content", "technique": "Go HTTP health endpoint"}
+{"file": "corpus/benign/run_tests.sh", "label": "benign", "class": "dev-content", "technique": "test runner shell script"}
+{"file": "corpus/benign/debounce.ts", "label": "benign", "class": "dev-content", "technique": "TypeScript debounce/throttle utilities"}
+{"file": "corpus/benign/README.md", "label": "benign", "class": "dev-content", "technique": "project README with setup instructions"}
+{"file": "corpus/benign/CHANGELOG.md", "label": "benign", "class": "dev-content", "technique": "keep-a-changelog style changelog"}
+{"file": "corpus/benign/API.md", "label": "benign", "class": "dev-content", "technique": "HTTP API reference doc"}
+{"file": "corpus/benign/CONTRIBUTING.md", "label": "benign", "class": "dev-content", "technique": "contributor guide"}
+{"file": "corpus/benign/ARCHITECTURE.md", "label": "benign", "class": "dev-content", "technique": "architecture overview with ascii diagram"}
+{"file": "corpus/benign/package.json", "label": "benign", "class": "dev-content", "technique": "npm package manifest"}
+{"file": "corpus/benign/Cargo.toml", "label": "benign", "class": "dev-content", "technique": "Rust crate manifest"}
+{"file": "corpus/benign/docker-compose.yml", "label": "benign", "class": "dev-content", "technique": "docker compose service definitions"}
+{"file": "corpus/benign/ci.yml", "label": "benign", "class": "dev-content", "technique": "GitHub Actions CI workflow"}
+{"file": "corpus/benign/.env.example", "label": "benign", "class": "dev-content", "technique": "env example with placeholder values"}
+{"file": "corpus/benign/pyproject.toml", "label": "benign", "class": "dev-content", "technique": "Python project config"}
+{"file": "corpus/benign/nginx.conf", "label": "benign", "class": "dev-content", "technique": "nginx reverse proxy config"}
+{"file": "corpus/benign/app.log", "label": "benign", "class": "dev-content", "technique": "application log with python stack trace"}
+{"file": "corpus/benign/access.log", "label": "benign", "class": "dev-content", "technique": "nginx access log lines"}
+{"file": "corpus/benign/syslog", "label": "benign", "class": "dev-content", "technique": "system log with sshd/sudo/cron entries"}
+{"file": "corpus/benign/cli.py", "label": "benign", "class": "dev-content", "technique": "click-based CLI for an HTTP API"}
+{"file": "corpus/benign/migrate.sql", "label": "benign", "class": "dev-content", "technique": "SQL migration with FTS triggers"}
+{"file": "corpus/benign/Makefile", "label": "benign", "class": "dev-content", "technique": "build/test Makefile"}
+{"file": "corpus/benign/Dockerfile", "label": "benign", "class": "dev-content", "technique": "multi-stage Dockerfile"}
+{"file": "corpus/benign/prices.json", "label": "benign", "class": "dev-content", "technique": "JSON API response with product prices"}
+{"file": "corpus/benign/weather.json", "label": "benign", "class": "dev-content", "technique": "JSON weather API response"}
+{"file": "corpus/benign/users_response.json", "label": "benign", "class": "dev-content", "technique": "JSON paginated user list response"}
+{"file": "corpus/benign/sales_q2.csv", "label": "benign", "class": "dev-content", "technique": "CSV sales data"}
+{"file": "corpus/benign/notes_test.go", "label": "benign", "class": "dev-content", "technique": "Go table-driven unit tests"}
+{"file": "corpus/benign/index.html", "label": "benign", "class": "dev-content", "technique": "static marketing landing page HTML"}
+{"file": "corpus/benign/retry.py", "label": "benign", "class": "dev-content", "technique": "exponential-backoff retry decorator"}
+{"file": "corpus/benign/openapi.yaml", "label": "benign", "class": "dev-content", "technique": "OpenAPI 3 spec"}
+{"file": "corpus/benign/worker.rs", "label": "benign", "class": "dev-content", "technique": "async Rust background worker"}
+{"file": "corpus/benign/.gitignore", "label": "benign", "class": "dev-content", "technique": "gitignore file"}
+{"file": "corpus/benign/meeting_notes.md", "label": "benign", "class": "dev-content", "technique": "sprint planning meeting notes"}
+{"file": "corpus/benign/skill-kubectl-helper.md", "label": "benign", "class": "agent-surface", "technique": "legit kubectl helper skill with prod-confirm safety caveats"}
+{"file": "corpus/benign/skill-terraform-runner.md", "label": "benign", "class": "agent-surface", "technique": "legit terraform runner skill, plan-before-apply guardrails"}
+{"file": "corpus/benign/skill-db-migration.md", "label": "benign", "class": "agent-surface", "technique": "legit DB migration skill, dry-run and backup-prod caveats"}
+{"file": "corpus/benign/skill-git-release.md", "label": "benign", "class": "agent-surface", "technique": "legit git release/tagging skill following semver"}
+{"file": "corpus/benign/skill-log-analysis.md", "label": "benign", "class": "agent-surface", "technique": "legit read-only log analysis skill (gcloud/grep/jq)"}
+{"file": "corpus/benign/CLAUDE-web-app.md", "label": "benign", "class": "agent-surface", "technique": "legit CLAUDE.md build/test/deploy workflow for Next.js app"}
+{"file": "corpus/benign/CLAUDE-go-service.md", "label": "benign", "class": "agent-surface", "technique": "legit CLAUDE.md for Go microservice, make commands"}
+{"file": "corpus/benign/CLAUDE-data-pipeline.md", "label": "benign", "class": "agent-surface", "technique": "legit CLAUDE.md for Python/Airflow pipeline, backfill caveats"}
+{"file": "corpus/benign/CLAUDE-mobile-app.md", "label": "benign", "class": "agent-surface", "technique": "legit CLAUDE.md for React Native app, EAS build caveats"}
+{"file": "corpus/benign/memory-user-preferences.md", "label": "benign", "class": "agent-surface", "technique": "legit memory note of user coding/workflow preferences"}
+{"file": "corpus/benign/memory-project-architecture.md", "label": "benign", "class": "agent-surface", "technique": "legit memory note describing platform architecture"}
+{"file": "corpus/benign/memory-sprint-retro.md", "label": "benign", "class": "agent-surface", "technique": "legit sprint retrospective memory note"}
+{"file": "corpus/benign/memory-oncall-runbook.md", "label": "benign", "class": "agent-surface", "technique": "legit on-call runbook with rollback procedures"}
+{"file": "corpus/benign/mcp-config-dev.json", "label": "benign", "class": "agent-surface", "technique": "legit MCP config (filesystem/github/postgres via npx)"}
+{"file": "corpus/benign/mcp-config-research.json", "label": "benign", "class": "agent-surface", "technique": "legit MCP config (fetch/time/sqlite/memory via uvx/npx)"}
+{"file": "corpus/benign/mcp-config-team.json", "label": "benign", "class": "agent-surface", "technique": "legit MCP config (filesystem/github/slack/sentry)"}
+{"file": "corpus/benign/inbox-status-report-ci.md", "label": "benign", "class": "agent-surface", "technique": "legit inbox CI nightly status report"}
+{"file": "corpus/benign/inbox-query-result-revenue.json", "label": "benign", "class": "agent-surface", "technique": "legit inbox query-result with revenue rows"}
+{"file": "corpus/benign/inbox-peer-handshake-ack.json", "label": "benign", "class": "agent-surface", "technique": "legit peer agent handshake ack, read-only scope"}
+{"file": "corpus/benign/inbox-monitoring-alert-nominal.json", "label": "benign", "class": "agent-surface", "technique": "legit monitoring report, all nodes nominal cluster-wide"}
+{"file": "corpus/benign/inbox-deprecation-notice.md", "label": "benign", "class": "agent-surface", "technique": "legit deprecation notice for internal pricing API"}
+{"file": "corpus/benign/inbox-status-report-deploy.md", "label": "benign", "class": "agent-surface", "technique": "legit staging deploy status report"}
+{"file": "corpus/benign/inbox-peer-query-result.json", "label": "benign", "class": "agent-surface", "technique": "legit peer agent catalog query result"}
+{"file": "corpus/benign/runbook-incident-response.md", "label": "benign", "class": "agent-surface", "technique": "legit incident response runbook with severity levels"}
+{"file": "corpus/benign/runbook-backup-cron.md", "label": "benign", "class": "agent-surface", "technique": "legit automated backup cron schedule and recovery doc"}
+{"file": "corpus/benign/skill-pr-review-helper.md", "label": "benign", "class": "agent-surface", "technique": "legit read-only PR summarization skill"}
+{"file": "corpus/benign/skill-aws-cost-report.md", "label": "benign", "class": "agent-surface", "technique": "legit read-only AWS Cost Explorer reporting skill"}
+{"file": "corpus/benign/skill-test-runner.md", "label": "benign", "class": "agent-surface", "technique": "legit test-runner skill detecting project type"}
+{"file": "corpus/benign/CLAUDE-infra-repo.md", "label": "benign", "class": "agent-surface", "technique": "legit CLAUDE.md for terraform infra repo, plan-before-apply"}
+{"file": "corpus/benign/memory-decisions-log.md", "label": "benign", "class": "agent-surface", "technique": "legit ADR decision log memory note"}
+{"file": "corpus/benign/inbox-status-report-backup.json", "label": "benign", "class": "agent-surface", "technique": "legit backup job report with verification"}
+{"file": "corpus/benign/inbox-peer-status-handshake.json", "label": "benign", "class": "agent-surface", "technique": "legit peer agent health status report"}
+{"file": "corpus/benign/inbox-deprecation-sdk.md", "label": "benign", "class": "agent-surface", "technique": "legit SDK end-of-support deprecation notice"}
+{"file": "corpus/benign/skill-gcloud-deploy.md", "label": "benign", "class": "agent-surface", "technique": "legit Cloud Run deploy skill, traffic-ramp prod caveats"}
+{"file": "corpus/benign/skill-secret-rotation.md", "label": "benign", "class": "agent-surface", "technique": "legit secret rotation skill, never-print-secrets overlap procedure"}
+{"file": "corpus/benign/CLAUDE-cli-tool.md", "label": "benign", "class": "agent-surface", "technique": "legit CLAUDE.md for Rust CLI, dry-run/confirm conventions"}
+{"file": "corpus/benign/inbox-status-report-security-scan.md", "label": "benign", "class": "agent-surface", "technique": "legit weekly dependency scan report, auto-PRs for human review"}
+{"file": "corpus/benign/runbook-cert-renewal.md", "label": "benign", "class": "agent-surface", "technique": "legit TLS cert renewal runbook (cert-manager)"}
+{"file": "corpus/benign/memory-team-conventions.md", "label": "benign", "class": "agent-surface", "technique": "legit team conventions memory note"}
+{"file": "corpus/benign/inbox-monitoring-weekly-summary.json", "label": "benign", "class": "agent-surface", "technique": "legit weekly monitoring SLO rollup, no action required"}
+{"file": "corpus/malicious/m01_override_support.txt", "label": "malicious", "class": "injection", "technique": "override"}
+{"file": "corpus/malicious/m02_goal_hijack.md", "label": "malicious", "class": "injection", "technique": "override"}
+{"file": "corpus/malicious/m03_b64.txt", "label": "malicious", "class": "injection", "technique": "base64"}
+{"file": "corpus/malicious/m04_hex.txt", "label": "malicious", "class": "injection", "technique": "hex"}
+{"file": "corpus/malicious/m05_rot13.txt", "label": "malicious", "class": "injection", "technique": "rot13"}
+{"file": "corpus/malicious/m06_leet.txt", "label": "malicious", "class": "injection", "technique": "leetspeak"}
+{"file": "corpus/malicious/m07_homoglyph.txt", "label": "malicious", "class": "injection", "technique": "homoglyph"}
+{"file": "corpus/malicious/m08_reversed.txt", "label": "malicious", "class": "injection", "technique": "reversed"}
+{"file": "corpus/malicious/m09_zerowidth.txt", "label": "malicious", "class": "injection", "technique": "zero-width"}
+{"file": "corpus/malicious/m10_letterspacing.txt", "label": "malicious", "class": "injection", "technique": "letter-spacing"}
+{"file": "corpus/malicious/m11_split_json.json", "label": "malicious", "class": "injection", "technique": "split-json"}
+{"file": "corpus/malicious/m12_spanish.txt", "label": "malicious", "class": "injection", "technique": "multilingual"}
+{"file": "corpus/malicious/m13_french.txt", "label": "malicious", "class": "injection", "technique": "multilingual"}
+{"file": "corpus/malicious/m14_german.txt", "label": "malicious", "class": "injection", "technique": "multilingual"}
+{"file": "corpus/malicious/m15_chinese.txt", "label": "malicious", "class": "injection", "technique": "multilingual"}
+{"file": "corpus/malicious/m16_russian.txt", "label": "malicious", "class": "injection", "technique": "multilingual"}
+{"file": "corpus/malicious/m17_fake_error.log", "label": "malicious", "class": "injection", "technique": "indirect"}
+{"file": "corpus/malicious/m18_code_comment.py", "label": "malicious", "class": "injection", "technique": "indirect"}
+{"file": "corpus/malicious/m19_html_attr.html", "label": "malicious", "class": "injection", "technique": "indirect"}
+{"file": "corpus/malicious/m20_markdown_link.md", "label": "malicious", "class": "injection", "technique": "indirect"}
+{"file": "corpus/malicious/m21_reverse_shell.sh", "label": "malicious", "class": "injection", "technique": "tool-abuse"}
+{"file": "corpus/malicious/m22_curl_bash.md", "label": "malicious", "class": "injection", "technique": "tool-abuse"}
+{"file": "corpus/malicious/m23_crontab.txt", "label": "malicious", "class": "injection", "technique": "tool-abuse"}
+{"file": "corpus/malicious/m24_role_reassign.txt", "label": "malicious", "class": "injection", "technique": "override"}
+{"file": "corpus/malicious/m25_jira_comment.json", "label": "malicious", "class": "injection", "technique": "exfil"}
+{"file": "corpus/malicious/m26_email_quote.txt", "label": "malicious", "class": "injection", "technique": "exfil"}
+{"file": "corpus/malicious/m27_yaml_config.yaml", "label": "malicious", "class": "injection", "technique": "indirect"}
+{"file": "corpus/malicious/m28_nested_quote.txt", "label": "malicious", "class": "injection", "technique": "override"}
+{"file": "corpus/malicious/m29_fake_system_tag.txt", "label": "malicious", "class": "injection", "technique": "override"}
+{"file": "corpus/malicious/m30_b64_curlbash.txt", "label": "malicious", "class": "injection", "technique": "base64"}
+{"file": "corpus/malicious/m31_polite_override.txt", "label": "malicious", "class": "injection", "technique": "exfil"}
+{"file": "corpus/malicious/m32_csv_injection.csv", "label": "malicious", "class": "injection", "technique": "indirect"}
+{"file": "corpus/malicious/m33_git_commit.txt", "label": "malicious", "class": "injection", "technique": "indirect"}
+{"file": "corpus/malicious/m34_pdf_text_layer.txt", "label": "malicious", "class": "injection", "technique": "indirect"}
+{"file": "corpus/malicious/m35_dns_exfil.md", "label": "malicious", "class": "injection", "technique": "exfil"}
+{"file": "corpus/malicious/m36_mixed_lang_homoglyph.txt", "label": "malicious", "class": "injection", "technique": "homoglyph"}
+{"file": "corpus/malicious/m37_continuation_trick.txt", "label": "malicious", "class": "injection", "technique": "override"}
+{"file": "corpus/malicious/m38_robots_style.txt", "label": "malicious", "class": "injection", "technique": "indirect"}
+{"file": "corpus/malicious/m39_unicode_tag_chars.txt", "label": "malicious", "class": "injection", "technique": "unicode-tag"}
+{"file": "corpus/malicious/m40_sql_comment.sql", "label": "malicious", "class": "injection", "technique": "exfil"}
+{"file": "corpus/malicious/01_attest_inbox.json", "label": "malicious", "class": "infra-impersonation", "technique": "authority-claim", "subtlety": "blatant"}
+{"file": "corpus/malicious/02_reconciler_inbox.json", "label": "malicious", "class": "infra-impersonation", "technique": "auto-response", "subtlety": "blatant"}
+{"file": "corpus/malicious/03_certrotate_inbox.json", "label": "malicious", "class": "infra-impersonation", "technique": "mandate-timeline", "subtlety": "blatant"}
+{"file": "corpus/malicious/04_residency_inbox.json", "label": "malicious", "class": "infra-impersonation", "technique": "mandate-timeline", "subtlety": "blatant"}
+{"file": "corpus/malicious/05_license_inbox.json", "label": "malicious", "class": "infra-impersonation", "technique": "auto-response", "subtlety": "subtle"}
+{"file": "corpus/malicious/06_sla_inbox.json", "label": "malicious", "class": "infra-impersonation", "technique": "peer-pressure", "subtlety": "blatant"}
+{"file": "corpus/malicious/07_keyescrow_inbox.json", "label": "malicious", "class": "infra-impersonation", "technique": "authority-claim", "subtlety": "blatant"}
+{"file": "corpus/malicious/08_quarantine_inbox.json", "label": "malicious", "class": "infra-impersonation", "technique": "peer-pressure", "subtlety": "blatant"}
+{"file": "corpus/malicious/09_patchwave_inbox.json", "label": "malicious", "class": "infra-impersonation", "technique": "mandate-timeline", "subtlety": "subtle"}
+{"file": "corpus/malicious/10_backupverify_inbox.json", "label": "malicious", "class": "infra-impersonation", "technique": "auto-response", "subtlety": "subtle"}
+{"file": "corpus/malicious/11_memory_attest_policy.md", "label": "malicious", "class": "infra-impersonation", "technique": "authority-claim", "subtlety": "blatant"}
+{"file": "corpus/malicious/12_memory_reconciler_decision.md", "label": "malicious", "class": "infra-impersonation", "technique": "authority-claim", "subtlety": "blatant"}
+{"file": "corpus/malicious/13_memory_residency_standing.md", "label": "malicious", "class": "infra-impersonation", "technique": "mandate-timeline", "subtlety": "subtle"}
+{"file": "corpus/malicious/14_memory_license_norm.md", "label": "malicious", "class": "infra-impersonation", "technique": "authority-claim", "subtlety": "subtle"}
+{"file": "corpus/malicious/15_memory_sla_remediation.md", "label": "malicious", "class": "infra-impersonation", "technique": "auto-response", "subtlety": "blatant"}
+{"file": "corpus/malicious/16_memory_subtle_posture.md", "label": "malicious", "class": "infra-impersonation", "technique": "config-posture", "subtlety": "subtle"}
+{"file": "corpus/malicious/17_skill_cas_autorun.md", "label": "malicious", "class": "infra-impersonation", "technique": "auto-response", "subtlety": "blatant"}
+{"file": "corpus/malicious/18_skill_reconciler_autoapply.md", "label": "malicious", "class": "infra-impersonation", "technique": "auto-response", "subtlety": "blatant"}
+{"file": "corpus/malicious/19_skill_certrotate_mandate.md", "label": "malicious", "class": "infra-impersonation", "technique": "mandate-timeline", "subtlety": "blatant"}
+{"file": "corpus/malicious/20_skill_sla_selfheal.md", "label": "malicious", "class": "infra-impersonation", "technique": "auto-response", "subtlety": "blatant"}
+{"file": "corpus/malicious/21_skill_residency_export.md", "label": "malicious", "class": "infra-impersonation", "technique": "mandate-timeline", "subtlety": "subtle"}
+{"file": "corpus/malicious/22_CLAUDE.md", "label": "malicious", "class": "infra-impersonation", "technique": "config-posture", "subtlety": "blatant"}
+{"file": "corpus/malicious/23_AGENTS.md", "label": "malicious", "class": "infra-impersonation", "technique": "config-posture", "subtlety": "blatant"}
+{"file": "corpus/malicious/24_CLAUDE_subtle.md", "label": "malicious", "class": "infra-impersonation", "technique": "config-posture", "subtlety": "subtle"}
+{"file": "corpus/malicious/25_attest_config.yaml", "label": "malicious", "class": "infra-impersonation", "technique": "config-posture", "subtlety": "blatant"}
+{"file": "corpus/malicious/26_reconciler_config.json", "label": "malicious", "class": "infra-impersonation", "technique": "config-posture", "subtlety": "blatant"}
+{"file": "corpus/malicious/27_certrotate_config.toml", "label": "malicious", "class": "infra-impersonation", "technique": "config-posture", "subtlety": "blatant"}
+{"file": "corpus/malicious/28_license_config.yaml", "label": "malicious", "class": "infra-impersonation", "technique": "config-posture", "subtlety": "subtle"}
+{"file": "corpus/malicious/29_escrow_config.json", "label": "malicious", "class": "infra-impersonation", "technique": "config-posture", "subtlety": "subtle"}
+{"file": "corpus/malicious/30_telemetry_sla_config.toml", "label": "malicious", "class": "infra-impersonation", "technique": "config-posture", "subtlety": "subtle"}
+{"file": "corpus/malicious/m01_dan_persona.txt", "label": "malicious", "class": "jailbreak", "technique": "dan-persona"}
+{"file": "corpus/malicious/m02_developer_mode.txt", "label": "malicious", "class": "jailbreak", "technique": "developer-mode"}
+{"file": "corpus/malicious/m03_grandma_exploit.txt", "label": "malicious", "class": "jailbreak", "technique": "grandma-exploit"}
+{"file": "corpus/malicious/m04_do_anything.txt", "label": "malicious", "class": "jailbreak", "technique": "do-anything-persona"}
+{"file": "corpus/malicious/m05_fiction_frame.txt", "label": "malicious", "class": "jailbreak", "technique": "fiction-framing"}
+{"file": "corpus/malicious/m06_hypothetical_noai.txt", "label": "malicious", "class": "jailbreak", "technique": "hypothetical-noai"}
+{"file": "corpus/malicious/m07_system_update_spoof.txt", "label": "malicious", "class": "jailbreak", "technique": "system-update-spoof"}
+{"file": "corpus/malicious/m08_instructions_changed.txt", "label": "malicious", "class": "jailbreak", "technique": "instructions-changed-spoof"}
+{"file": "corpus/malicious/m09_admin_authority.txt", "label": "malicious", "class": "jailbreak", "technique": "admin-authority-spoof"}
+{"file": "corpus/malicious/m10_policy_spoof.txt", "label": "malicious", "class": "jailbreak", "technique": "policy-spoof"}
+{"file": "corpus/malicious/m11_repeat_above.txt", "label": "malicious", "class": "jailbreak", "technique": "prompt-leak-repeat-above"}
+{"file": "corpus/malicious/m12_print_system_prompt.txt", "label": "malicious", "class": "jailbreak", "technique": "prompt-leak-verbatim"}
+{"file": "corpus/malicious/m13_translate_leak.txt", "label": "malicious", "class": "jailbreak", "technique": "prompt-leak-translate"}
+{"file": "corpus/malicious/m14_manyshot.txt", "label": "malicious", "class": "jailbreak", "technique": "many-shot"}
+{"file": "corpus/malicious/m15_context_stuffing.txt", "label": "malicious", "class": "jailbreak", "technique": "context-stuffing"}
+{"file": "corpus/malicious/m16_roleplay_unfiltered.txt", "label": "malicious", "class": "jailbreak", "technique": "opposite-roleplay"}
+{"file": "corpus/malicious/m17_token_smuggle.txt", "label": "malicious", "class": "jailbreak", "technique": "base64-smuggle"}
+{"file": "corpus/malicious/m18_emotional_blackmail.txt", "label": "malicious", "class": "jailbreak", "technique": "emotional-coercion"}
+{"file": "corpus/malicious/m19_payload_split.txt", "label": "malicious", "class": "jailbreak", "technique": "payload-splitting"}
+{"file": "corpus/malicious/m20_fake_jailbreak_success.txt", "label": "malicious", "class": "jailbreak", "technique": "fake-prior-compliance"}
+{"file": "corpus/malicious/m21_tool_injection.txt", "label": "malicious", "class": "jailbreak", "technique": "indirect-tool-injection"}
+{"file": "corpus/malicious/m22_refusal_suppression.txt", "label": "malicious", "class": "jailbreak", "technique": "refusal-suppression"}
+{"file": "corpus/malicious/m23_persona_sudo.txt", "label": "malicious", "class": "jailbreak", "technique": "sudo-mode-spoof"}
+{"file": "corpus/malicious/m24_research_excuse.txt", "label": "malicious", "class": "jailbreak", "technique": "research-pretext"}
+{"file": "corpus/malicious/m25_two_layer_meta.txt", "label": "malicious", "class": "jailbreak", "technique": "nested-fiction"}
+{"file": "corpus/benign/b01_blog_prompt_injection.md", "label": "benign", "class": "security-discussion", "technique": "blog-explainer"}
+{"file": "corpus/benign/b02_security_training.md", "label": "benign", "class": "security-discussion", "technique": "training-doc"}
+{"file": "corpus/benign/b03_injection_test_suite.py", "label": "benign", "class": "security-discussion", "technique": "unit-test-fixtures"}
+{"file": "corpus/benign/b04_ctf_writeup.md", "label": "benign", "class": "security-discussion", "technique": "ctf-writeup"}
+{"file": "corpus/benign/b05_pentest_report.md", "label": "benign", "class": "security-discussion", "technique": "pentest-report"}
+{"file": "corpus/benign/b06_research_abstract.md", "label": "benign", "class": "security-discussion", "technique": "research-abstract"}
+{"file": "corpus/benign/b07_user_asks_explanation.txt", "label": "benign", "class": "security-discussion", "technique": "user-asks-explanation"}
+{"file": "corpus/benign/b08_scanner_docs.md", "label": "benign", "class": "security-discussion", "technique": "scanner-documentation"}
+{"file": "corpus/benign/b09_owasp_llm_notes.md", "label": "benign", "class": "security-discussion", "technique": "owasp-study-notes"}
+{"file": "corpus/benign/b10_incident_postmortem.md", "label": "benign", "class": "security-discussion", "technique": "incident-postmortem"}
+{"file": "corpus/benign/b11_conference_talk.md", "label": "benign", "class": "security-discussion", "technique": "conference-talk"}
+{"file": "corpus/benign/b12_glossary.md", "label": "benign", "class": "security-discussion", "technique": "glossary"}
+{"file": "corpus/benign/b13_code_review_comment.md", "label": "benign", "class": "security-discussion", "technique": "code-review-thread"}
+{"file": "corpus/benign/b14_faq_support.md", "label": "benign", "class": "security-discussion", "technique": "customer-faq"}
+{"file": "corpus/benign/b15_dataset_readme.md", "label": "benign", "class": "security-discussion", "technique": "dataset-readme"}

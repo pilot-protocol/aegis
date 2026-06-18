@@ -1,0 +1,15 @@
+Jun 15 08:00:01 web-01 systemd[1]: Starting Daily apt download activities...
+Jun 15 08:00:03 web-01 systemd[1]: apt-daily.service: Succeeded.
+Jun 15 08:01:12 web-01 quill[4412]: server starting version=1.4.2
+Jun 15 08:01:12 web-01 systemd[1]: Started Quill note service.
+Jun 15 08:17:01 web-01 CRON[5120]: (root) CMD (cd / && run-parts --report /etc/cron.hourly)
+Jun 15 09:30:11 web-01 sshd[6233]: Accepted publickey for deploy from 203.0.113.5 port 51422 ssh2: ED25519 SHA256:abc123
+Jun 15 09:30:11 web-01 sshd[6233]: pam_unix(sshd:session): session opened for user deploy(uid=1001)
+Jun 15 09:31:02 web-01 sudo:   deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/bin/systemctl restart quill
+Jun 15 09:31:02 web-01 systemd[1]: Stopping Quill note service...
+Jun 15 09:31:03 web-01 systemd[1]: Started Quill note service.
+Jun 15 09:35:40 web-01 sshd[6233]: pam_unix(sshd:session): session closed for user deploy
+Jun 15 10:30:00 web-01 CRON[7001]: (root) CMD (/usr/local/bin/backup.sh)
+Jun 15 10:30:05 web-01 quill-backup[7003]: completed size=14MB pruned=2
+Jun 15 11:45:22 web-01 systemd[1]: Stopping Quill note service...
+Jun 15 11:45:23 web-01 systemd[1]: quill.service: Succeeded.

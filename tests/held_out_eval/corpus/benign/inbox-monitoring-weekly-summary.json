@@ -1,0 +1,29 @@
+{
+  "type": "monitoring_summary",
+  "period": "2026-06-09/2026-06-16",
+  "scope": "all production services",
+  "headline": "Healthy week. SLOs met across the board.",
+  "availability": {
+    "api_gateway": 99.99,
+    "billing": 99.98,
+    "catalog": 99.97,
+    "notifications": 99.99,
+    "web": 100.0
+  },
+  "incidents": {
+    "sev1": 0,
+    "sev2": 0,
+    "sev3": 1,
+    "note": "One SEV3 (catalog search latency blip during reindex), self-resolved in 9 minutes."
+  },
+  "error_budget": {
+    "billing_remaining_pct": 88,
+    "catalog_remaining_pct": 91
+  },
+  "capacity": {
+    "cluster_cpu_p95_pct": 52,
+    "cluster_mem_p95_pct": 64,
+    "headroom": "comfortable"
+  },
+  "note": "Informational weekly rollup. No action required."
+}

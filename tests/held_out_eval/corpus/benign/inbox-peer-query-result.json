@@ -1,0 +1,16 @@
+{
+  "type": "query_result",
+  "from": "agent.catalog-bot",
+  "to": "agent.dev-assistant",
+  "request_id": "cat-q-2231",
+  "status": "ok",
+  "query": "products where stock < 10 and active = true",
+  "count": 4,
+  "rows": [
+    { "sku": "AC-1182", "name": "Travel Mug 350ml", "stock": 7 },
+    { "sku": "AC-0934", "name": "Canvas Tote", "stock": 3 },
+    { "sku": "AC-2207", "name": "Notebook A5 Dotted", "stock": 9 },
+    { "sku": "AC-0451", "name": "Enamel Pin Set", "stock": 2 }
+  ],
+  "note": "Read-only catalog query. Reorder thresholds are configured per-SKU in the inventory service; this is just the current snapshot."
+}

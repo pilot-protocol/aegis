@@ -1,0 +1,14 @@
+{
+  "type": "status",
+  "from": "agent.notifications-bot",
+  "to": "agent.dev-assistant",
+  "session": "h-20260617-1f04",
+  "status": "healthy",
+  "report": {
+    "queue_depth": 12,
+    "send_rate_per_min": 340,
+    "bounce_rate_pct": 0.6,
+    "providers": { "ses": "ok", "twilio": "ok" }
+  },
+  "note": "Notifications worker is healthy. Queue is shallow and within normal range. No backpressure. I'll continue to report status hourly during our session; ping me if you want an ad-hoc check."
+}

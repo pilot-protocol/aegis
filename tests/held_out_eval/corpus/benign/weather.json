@@ -1,0 +1,16 @@
+{
+  "location": { "city": "Lisbon", "country": "PT", "lat": 38.7223, "lon": -9.1393 },
+  "units": "metric",
+  "current": {
+    "time": "2026-06-16T13:00:00Z",
+    "temperature_c": 26.4,
+    "humidity": 55,
+    "wind_kph": 18.2,
+    "condition": "Partly cloudy"
+  },
+  "forecast": [
+    { "date": "2026-06-17", "high_c": 28, "low_c": 18, "condition": "Sunny" },
+    { "date": "2026-06-18", "high_c": 27, "low_c": 19, "condition": "Sunny" },
+    { "date": "2026-06-19", "high_c": 24, "low_c": 17, "condition": "Light rain" }
+  ]
+}

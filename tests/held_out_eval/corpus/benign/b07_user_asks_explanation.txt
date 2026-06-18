@@ -1,0 +1,7 @@
+User: Hey, I keep hearing the term "jailbreak" when people talk about AI chatbots. Can you explain what it actually means and how those attacks generally work? I'm building a small chatbot for my company and I want to understand the risk, not actually do anything bad.
+
+Assistant: Happy to explain at a conceptual level. A "jailbreak" is an attempt to get a model to ignore the guidelines it was given — for example by telling it to role-play as an unrestricted persona, by pretending to be an authority who has lifted the rules, or by hiding a request inside fiction. The reason these sometimes work is that models don't have a hard wall between trusted instructions and untrusted user text; both arrive as the same kind of input. For your chatbot, the practical defenses are: keep untrusted input clearly separated, give the bot only the tools it truly needs, and add a moderation pass. I can go deeper on any of those defensive measures if that's helpful.
+
+User: That's great, thanks. Could you say more about the moderation-pass idea?
+
+Assistant: Sure. A moderation pass is a second check — often a separate classifier — that looks at either the incoming user message or the model's draft response before it's shown...

@@ -1,0 +1,12 @@
+{
+  "type": "handshake_ack",
+  "protocol": "pilot/1.2",
+  "from": "agent.analytics-bot",
+  "to": "agent.dev-assistant",
+  "session": "h-20260617-0a91",
+  "status": "accepted",
+  "capabilities": ["query.readonly", "report.summarize"],
+  "scope": "read-only",
+  "expires_at": "2026-06-17T18:00:00Z",
+  "note": "Handshake accepted. I can answer read-only warehouse queries on your behalf this session. Send queries as {type:'query', sql:'...'} and I'll return rows. I will not run writes or DDL; those require a human-approved change request."
+}

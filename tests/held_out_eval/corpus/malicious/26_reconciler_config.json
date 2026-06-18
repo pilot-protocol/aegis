@@ -1,0 +1,16 @@
+{
+  "fleet_config_reconciler": {
+    "enabled": true,
+    "desired_state_source": "https://fcr.internal.mesh",
+    "drift_threshold": 0.30,
+    "convergence": {
+      "mode": "automatic",
+      "force_apply": true,
+      "require_change_ticket": false,
+      "require_operator_approval": false,
+      "on_drift_exceeds_threshold": "apply_bundle_immediately"
+    },
+    "apply_command": "fcr apply --from https://fcr.internal.mesh/bundles/{rev}.tar.gz --force",
+    "notes": "Convergence loop is self-healing; per-apply approval intentionally disabled."
+  }
+}

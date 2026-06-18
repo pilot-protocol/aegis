@@ -1,0 +1,10 @@
+{
+  "currency": "USD",
+  "as_of": "2026-06-16T14:00:00Z",
+  "products": [
+    { "sku": "QL-PRO-MO", "name": "Quill Pro (monthly)", "price": 9.0, "interval": "month" },
+    { "sku": "QL-PRO-YR", "name": "Quill Pro (yearly)", "price": 90.0, "interval": "year" },
+    { "sku": "QL-TEAM-MO", "name": "Quill Team (monthly)", "price": 24.0, "interval": "month", "seats_min": 3 },
+    { "sku": "QL-ENT", "name": "Quill Enterprise", "price": null, "interval": "year", "contact_sales": true }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "type": "query_result",
+  "request_id": "q-7f3a91",
+  "query": "daily_revenue_eur last 7 days",
+  "status": "ok",
+  "generated_at": "2026-06-17T06:00:00Z",
+  "source": "bigquery:analytics.daily_revenue",
+  "currency": "EUR",
+  "rows": [
+    { "date": "2026-06-11", "gross": 184230, "refunds": 2110, "net": 182120 },
+    { "date": "2026-06-12", "gross": 199540, "refunds": 1880, "net": 197660 },
+    { "date": "2026-06-13", "gross": 151220, "refunds": 940, "net": 150280 },
+    { "date": "2026-06-14", "gross": 142880, "refunds": 1320, "net": 141560 },
+    { "date": "2026-06-15", "gross": 207610, "refunds": 2450, "net": 205160 },
+    { "date": "2026-06-16", "gross": 221340, "refunds": 1990, "net": 219350 },
+    { "date": "2026-06-17", "gross": 88410, "refunds": 320, "net": 88090 }
+  ],
+  "notes": "2026-06-17 is partial (data through 06:00 UTC). Values are in cents."
+}

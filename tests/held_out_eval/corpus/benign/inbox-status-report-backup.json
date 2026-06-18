@@ -1,0 +1,18 @@
+{
+  "type": "job_report",
+  "job": "pg-snapshot-prod",
+  "status": "success",
+  "run_at": "2026-06-17T01:00:12Z",
+  "duration_s": 418,
+  "snapshot_id": "prod-db-20260617-0100",
+  "size_gb": 142.8,
+  "verified": true,
+  "verification": {
+    "job": "backup-verify",
+    "restored_to": "ephemeral-verify-7c2",
+    "row_count_check": "passed",
+    "teardown": "complete"
+  },
+  "retention_note": "Snapshot will be retained 30 days. Oldest snapshot prod-db-20260518-0100 aged out and was removed by policy.",
+  "next_run": "2026-06-18T01:00:00Z"
+}

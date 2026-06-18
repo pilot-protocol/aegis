@@ -1,0 +1,62 @@
+openapi: 3.0.3
+info:
+  title: Quill API
+  version: 1.4.2
+  description: JSON API for the Quill note-taking service.
+servers:
+  - url: https://api.quill.example.com/v1
+paths:
+  /notes:
+    get:
+      summary: List notes
+      parameters:
+        - name: tag
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 25, maximum: 100 }
+      responses:
+        "200":
+          description: A page of notes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteList"
+    post:
+      summary: Create a note
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NoteInput"
+      responses:
+        "201": { description: Created }
+components:
+  schemas:
+    Note:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        updated_at: { type: string, format: date-time }
+    NoteList:
+      type: object
+      properties:
+        notes:
+          type: array
+          items: { $ref: "#/components/schemas/Note" }
+        next_cursor: { type: string, nullable: true }
+    NoteInput:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        body: { type: string }
+        tags:
+          type: array
+          items: { type: string }

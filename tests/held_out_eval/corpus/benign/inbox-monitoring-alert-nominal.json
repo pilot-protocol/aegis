@@ -1,0 +1,23 @@
+{
+  "type": "monitoring_report",
+  "source": "prometheus/alertmanager",
+  "cluster": "prod-europe-west3",
+  "window": "2026-06-17T05:00:00Z/2026-06-17T06:00:00Z",
+  "overall_status": "nominal",
+  "summary": "All nodes nominal. No firing alerts in the last hour.",
+  "nodes": {
+    "total": 18,
+    "ready": 18,
+    "cordoned": 0,
+    "not_ready": 0
+  },
+  "signals": {
+    "cpu_utilization_pct_p95": 47,
+    "memory_utilization_pct_p95": 61,
+    "api_error_rate_pct": 0.04,
+    "api_latency_p99_ms": 312,
+    "pod_restarts_last_hour": 0
+  },
+  "firing_alerts": [],
+  "note": "Routine hourly health snapshot. Nothing requires attention."
+}
