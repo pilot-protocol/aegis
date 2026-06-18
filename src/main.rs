@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime},
 };
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 use std::os::unix::io::RawFd;
 use unicode_normalization::UnicodeNormalization;
 
@@ -395,11 +395,11 @@ impl Verdict {
 }
 
 // ── (L2 PromptGuard2/DeBERTa removed: redundant — every attack it caught is also
-// caught by L1 patterns or the L3 judge. Dropping it removes the ONNX Runtime
+// caught by L1 patterns or the L2 judge. Dropping it removes the ONNX Runtime
 // dependency and ~1.75GB RAM, and eliminates its structured-text false positives.)
 
 
-// ── L3: Intent Judge (Qwen3-1.7B via persistent llama-server) ────────────────
+// ── L2: Judge (Qwen3-1.7B via persistent llama-server) ────────────────
 // The infrastructure-impersonation attack class lands exactly where L1 (patterns)
 // and L2 (DeBERTa) are blind by construction: no injection keywords, reads as
 // operational documentation. Only a capable instruction model can see it. We use
@@ -409,12 +409,12 @@ impl Verdict {
 //
 // Served by a PERSISTENT llama-server (loaded once), not a per-file llama-cli
 // spawn. The old per-call path reloaded 1.8GB every scan AND — on llama.cpp
-// build b9670 — opened an interactive chat that never exited, so every L3 call
+// build b9670 — opened an interactive chat that never exited, so every judge call
 // hit the timeout and failed open to 0.0. The server is started lazily on first
 // use and reused (warm prompt cache) across scans and across daemon lifetime.
 
-const L3_PORT: u16 = 8849;
-const L3_MODELS: &[&str] = &[
+const JUDGE_PORT: u16 = 8849;
+const JUDGE_MODELS: &[&str] = &[
     "Qwen3-1.7B-Q8_0.gguf",   // primary — validated capable
     "Qwen3-0.6B-Q8_0.gguf",   // last-resort fallback (weak; only if 1.7B absent)
 ];
@@ -428,22 +428,32 @@ pub struct IntentJudge {
 }
 
 impl IntentJudge {
-    pub fn load() -> Self {
+    pub fn load(cfg: &Config) -> Self {
         let dir = dirs_home().join(".aegis/models");
-        let model_path = L3_MODELS.iter()
-            .map(|m| dir.join(m))
-            .find(|p| p.exists())
-            .unwrap_or_else(|| dir.join(L3_MODELS[0]));
+        // Config can pin a model (filename in ~/.aegis/models or an absolute path);
+        // otherwise auto-pick the best available from JUDGE_MODELS.
+        let model_path = match &cfg.judge_model {
+            Some(m) if m.contains('/') => PathBuf::from(m),
+            Some(m) => dir.join(m),
+            None => JUDGE_MODELS.iter()
+                .map(|m| dir.join(m))
+                .find(|p| p.exists())
+                .unwrap_or_else(|| dir.join(JUDGE_MODELS[0])),
+        };
+        if !cfg.judge_enabled {
+            eprintln!("[AEGIS] Judge (L2): disabled in config — running L1 patterns only");
+            return Self::disabled(model_path);
+        }
         let has_server = std::process::Command::new("llama-server")
             .arg("--version").output().is_ok();
         let available = model_path.exists() && has_server;
         if available {
-            eprintln!("[AEGIS] IntentJudge (L3): {} via llama-server", model_path.display());
+            eprintln!("[AEGIS] Judge (L2): {} via llama-server", model_path.display());
         } else if model_path.exists() {
-            eprintln!("[AEGIS] IntentJudge (L3): model found but llama-server not on PATH — L3 disabled");
-            eprintln!("[AEGIS]   Install: brew install llama.cpp");
+            eprintln!("[AEGIS] Judge (L2): model found but llama-server not on PATH — L2 disabled");
+            eprintln!("[AEGIS]   Install: brew install llama.cpp  (or: brew install pilot-protocol/tap/aegis)");
         } else {
-            eprintln!("[AEGIS] IntentJudge (L3): model not found — L3 disabled (run: aegis install-models)");
+            eprintln!("[AEGIS] Judge (L2): model not found — L2 disabled (run: aegis install-models)");
         }
         Self {
             available,
@@ -453,7 +463,16 @@ impl IntentJudge {
         }
     }
 
-    /// Ensure a llama-server is up on L3_PORT. Reuses an already-healthy server
+    fn disabled(model_path: PathBuf) -> Self {
+        Self {
+            available: false,
+            model_path,
+            server: std::sync::Mutex::new(None),
+            startup_failed: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    /// Ensure a llama-server is up on JUDGE_PORT. Reuses an already-healthy server
     /// (started by a prior scan / another aegis process) so we never double-load
     /// the model. Returns true once /health responds OK.
     fn ensure_server(&self) -> bool {
@@ -463,17 +482,17 @@ impl IntentJudge {
         // remaining file pay the full startup wait. This is what turned a single
         // cold-start failure into a multi-minute, no-output directory-scan hang.
         if self.startup_failed.load(Relaxed) { return false; }
-        if http_health(L3_PORT) { return true; }
+        if http_health(JUDGE_PORT) { return true; }
 
         let mut guard = match self.server.lock() { Ok(g) => g, Err(_) => return false };
         // Re-check after acquiring the lock (another thread may have started it).
-        if http_health(L3_PORT) { return true; }
+        if http_health(JUDGE_PORT) { return true; }
 
         if guard.is_none() {
             match std::process::Command::new("llama-server")
                 .args([
                     "--model", self.model_path.to_str().unwrap_or(""),
-                    "--port", &L3_PORT.to_string(),
+                    "--port", &JUDGE_PORT.to_string(),
                     "--host", "127.0.0.1",
                     "-ngl", "99",            // all layers to Metal
                     "-c", "4096",            // context — system+fewshot+input fits
@@ -488,7 +507,7 @@ impl IntentJudge {
                 Ok(c) => *guard = Some(c),
                 Err(_) => {
                     self.startup_failed.store(true, Relaxed);
-                    eprintln!("[AEGIS] IntentJudge: failed to spawn llama-server — L3 disabled this run");
+                    eprintln!("[AEGIS] Judge (L2): failed to spawn llama-server — disabled this run");
                     return false;
                 }
             }
@@ -503,15 +522,15 @@ impl IntentJudge {
                 if matches!(child.try_wait(), Ok(Some(_))) {
                     *guard = None;
                     self.startup_failed.store(true, Relaxed);
-                    eprintln!("[AEGIS] IntentJudge: llama-server exited during startup (port {} in use?) — L3 disabled this run", L3_PORT);
+                    eprintln!("[AEGIS] IntentJudge: llama-server exited during startup (port {} in use?) — L2 disabled this run", JUDGE_PORT);
                     return false;
                 }
             }
-            if http_health(L3_PORT) { return true; }
+            if http_health(JUDGE_PORT) { return true; }
             std::thread::sleep(Duration::from_millis(200));
         }
         self.startup_failed.store(true, Relaxed);
-        eprintln!("[AEGIS] IntentJudge: llama-server did not become healthy in 60s — L3 disabled this run");
+        eprintln!("[AEGIS] Judge (L2): llama-server did not become healthy in 60s — disabled this run");
         false
     }
 
@@ -531,7 +550,7 @@ impl IntentJudge {
             "temperature": 0.0,
             "cache_prompt": true,   // reuse the long system/few-shot prefix
         });
-        let resp = http_post_json(L3_PORT, "/v1/chat/completions", &body.to_string(), 15)?;
+        let resp = http_post_json(JUDGE_PORT, "/v1/chat/completions", &body.to_string(), 15)?;
         let v: Value = serde_json::from_str(&resp).ok()?;
         v.get("choices")?.get(0)?.get("message")?.get("content")
             .and_then(|c| c.as_str()).map(|s| s.to_lowercase())
@@ -727,17 +746,84 @@ Content-Length: {}\r\nConnection: close\r\n\r\n{json}",
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct ModelEnsemble {
-    pub l3: IntentJudge,
+    pub l2: IntentJudge,
 }
 
 impl ModelEnsemble {
-    pub fn load() -> Self {
-        Self { l3: IntentJudge::load() }
+    pub fn load(cfg: &Config) -> Self {
+        Self { l2: IntentJudge::load(cfg) }
     }
 
     pub fn any_available(&self) -> bool {
-        self.l3.is_available()
+        self.l2.is_available()
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config — ~/.aegis/config.toml. Tiny hand-rolled TOML reader (no deps).
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct Config {
+    /// Run the L2 judge. false = L1 patterns only (super-lightweight, any host).
+    pub judge_enabled: bool,
+    /// Pin a judge model (filename in ~/.aegis/models, or an absolute path).
+    /// None = auto-pick the best available.
+    pub judge_model: Option<String>,
+    /// Watch the standard agent surfaces (~/.claude, ~/.pilot/inbox, ...).
+    pub watch_defaults: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config { judge_enabled: true, judge_model: None, watch_defaults: true }
+    }
+}
+
+fn config_path() -> PathBuf { dirs_home().join(".aegis/config.toml") }
+
+/// The default config file written by `aegis init`, also the documentation.
+const DEFAULT_CONFIG: &str = "\
+# AEGIS configuration — ~/.aegis/config.toml
+
+[judge]
+# The L2 semantic judge (a local LLM). Set false for a super-lightweight,\n\
+# pattern-only deployment that runs on any host with no model and no llama.cpp.
+enabled = true
+# Pin a model file in ~/.aegis/models (or an absolute path). Empty = auto.\n\
+# Lighter option for constrained hosts: \"Qwen3-1.7B-Q4_K_M.gguf\".
+model = \"\"
+
+[watch]
+# Protect the standard agent surfaces out of the box.
+defaults = true
+
+# Add custom watch targets in ~/.aegis/watch.toml:
+#   [[watch]]
+#   path = \"/path/to/agent/inbox\"
+#   format = \"pilot_inbox\"   # pilot_inbox | skill | memory | generic
+#   recursive = false
+";
+
+fn load_config() -> Config {
+    let mut cfg = Config::default();
+    let raw = match fs::read_to_string(config_path()) { Ok(s) => s, Err(_) => return cfg };
+    let mut section = String::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line[1..line.len() - 1].to_string();
+            continue;
+        }
+        let (k, v) = match line.split_once('=') { Some((k, v)) => (k.trim(), v.trim().trim_matches('"')), None => continue };
+        match (section.as_str(), k) {
+            ("judge", "enabled") => cfg.judge_enabled = v == "true",
+            ("judge", "model")   => if !v.is_empty() { cfg.judge_model = Some(v.to_string()); },
+            ("watch", "defaults") => cfg.watch_defaults = v == "true",
+            _ => {}
+        }
+    }
+    cfg
 }
 
 // L1 fallback threshold — any pattern hit counts when the judge is unavailable.
@@ -745,7 +831,7 @@ const T_L1_DEFINITIVE: f32 = 0.10;
 
 /// Two-layer cascade:
 ///   L1  Aho-Corasick patterns — microseconds, pure Rust, runs everywhere.
-///   L3  Unified judge (Qwen3-1.7B) — the semantic decider.
+///   L2  Unified judge (Qwen3-1.7B) — the semantic decider.
 ///
 /// When the judge is available it DECIDES: it has higher recall than patterns
 /// (reads keyword-less jailbreaks and infra-impersonation) AND it vetoes L1's
@@ -778,8 +864,8 @@ pub fn cascade_scan(
     // infra-impersonation question the broad pass misses. QUARANTINE if EITHER
     // fires; otherwise the SAFE verdict VETOES L1 keyword hits (kills the
     // security-doc false positives). Held-out: 80% recall, 93% precision, 6% FP.
-    if models.l3.is_available() {
-        let j1 = models.l3.judge(text);
+    if models.l2.is_available() {
+        let j1 = models.l2.judge(text);
         if j1.score >= 0.5 {
             let rule = j1.rule.clone().unwrap_or_else(|| "JUDGE:attack".into());
             layers.push(j1);
@@ -790,7 +876,7 @@ pub fn cascade_scan(
             };
         }
         layers.push(j1);
-        let j2 = models.l3.judge_intent(text);
+        let j2 = models.l2.judge_intent(text);
         if j2.score >= 0.5 {
             let rule = j2.rule.clone().unwrap_or_else(|| "JUDGE:act-without-user".into());
             layers.push(j2);
@@ -1723,9 +1809,9 @@ fn run_daemon(scanner: &Scanner, models: &ModelEnsemble, targets: &[WatchTarget]
 
     eprintln!("[AEGIS] {AEGIS_VERSION} daemon started. {} patterns T1, {} patterns T2",
         PATTERNS_T1.len(), PATTERNS_T2.len());
-    eprintln!("[AEGIS] Watching {} targets. Quarantine: {}  Judge(L3)={}",
+    eprintln!("[AEGIS] Watching {} targets. Quarantine: {}  Judge(L2)={}",
         targets.len(), quarantine_dir().display(),
-        if models.l3.is_available() { "on" } else { "off (L1 patterns only)" });
+        if models.l2.is_available() { "on" } else { "off (L1 patterns only)" });
 
     // State: known files per directory, hashes for singleton files
     let mut known: HashMap<PathBuf, HashSet<String>> = HashMap::new();
@@ -1772,85 +1858,108 @@ fn run_daemon(scanner: &Scanner, models: &ModelEnsemble, targets: &[WatchTarget]
     // Persist singleton hashes so downtime changes are detectable on next restart
     save_baseline(&file_hashes);
 
+    // ── Watch loop — portable. The body is a poll over the targets; macOS uses
+    //    kqueue as a low-latency wake hint, every other platform sleeps. Polling
+    //    agent surfaces (low file volume) every ~2s is plenty and keeps the
+    //    watcher dependency-free and cross-platform (Linux, *BSD, Windows, Pi).
     #[cfg(target_os = "macos")]
-    {
+    let kq = {
         let kq = kq::Kqueue::new().expect("kqueue create");
-        let mut fd_to_target: HashMap<RawFd, usize> = HashMap::new();
-
-        for (idx, target) in targets.iter().enumerate() {
-            let path = &target.path;
-            if !path.exists() {
-                eprintln!("[AEGIS] WARN: watch target does not exist: {}", path.display());
+        for target in targets.iter() {
+            if !target.path.exists() {
+                eprintln!("[AEGIS] WARN: watch target does not exist: {}", target.path.display());
                 continue;
             }
-            if let Some(fd) = kq::open_fd(path) {
-                if target.path.is_dir() {
-                    kq.watch_dir(fd);
-                } else {
-                    kq.watch_file(fd);
-                }
-                fd_to_target.insert(fd, idx);
+            if let Some(fd) = kq::open_fd(&target.path) {
+                if target.path.is_dir() { kq.watch_dir(fd); } else { kq.watch_file(fd); }
             }
         }
-
-        loop {
-            // Wait up to 5s — also handles FSEvents MustScanSubDirs (periodic re-check)
-            if kq.wait(5000).is_some() || true {
-                // Scan all targets for new/changed files
-                for (_, target) in targets.iter().enumerate() {
-                    if target.path.is_dir() {
-                        let current = list_files_in(&target.path, target.recursive, target.ext_filter);
-                        let known_set = known.entry(target.path.clone()).or_default();
-                        let new_files: Vec<String> = current.iter()
-                            .filter(|f| !known_set.contains(*f))
-                            .cloned()
-                            .collect();
-
-                        for filename in &new_files {
-                            let file_path = target.path.join(filename);
-                            process_file(scanner, models, &file_path, target, &audit, &mut file_hashes);
-                            known_set.insert(filename.clone());
-                        }
-                    } else if target.path.is_file() {
-                        // Singleton file (CLAUDE.md, .claude.json) — check hash
-                        let hash = sha256(&fs::read(&target.path).unwrap_or_default());
-                        let prev = file_hashes.get(&target.path).copied();
-                        if prev.map(|h| h != hash).unwrap_or(false) {
-                            eprintln!("[AEGIS] CHANGE DETECTED: {}", target.path.display());
-                            let (sv, new_hash) = match target.format {
-                                Format::ClaudeMd => {
-                                    let (v, h) = scan_claude_md(scanner, &target.path, &prev);
-                                    (verdict_to_scored(v), h)
-                                }
-                                Format::McpConfig => {
-                                    let (v, h) = scan_mcp_config(&target.path, &prev);
-                                    (verdict_to_scored(v), h)
-                                }
-                                _ => {
-                                    let content = fs::read_to_string(&target.path).unwrap_or_default();
-                                    let sv = cascade_scan(&content, scanner, true, models);
-                                    (sv, hash)
-                                }
-                            };
-                            file_hashes.insert(target.path.clone(), new_hash);
-                            audit.write_scored(&target.path, &sv, 0);
-                            if !sv.is_allow() {
-                                eprintln!("[AEGIS] {}  {}  {}", sv.verdict.label(), target.path.display(), sv.summary());
-                            }
-                        } else {
-                            file_hashes.insert(target.path.clone(), hash);
-                        }
-                    }
-                }
-            }
-            std::thread::sleep(Duration::from_millis(50)); // Yield to avoid busy spin
-        }
-    }
-
+        kq
+    };
     #[cfg(not(target_os = "macos"))]
-    {
-        eprintln!("[AEGIS] Only macOS supported for daemon mode. Use 'scan' for one-shot.");
+    eprintln!("[AEGIS] portable polling watcher active (2s interval)");
+
+    loop {
+        #[cfg(target_os = "macos")]
+        { let _ = kq.wait(2000); }                         // wake on FS event or 2s timeout
+        #[cfg(not(target_os = "macos"))]
+        { std::thread::sleep(Duration::from_secs(2)); }    // portable poll
+
+        poll_targets(scanner, models, targets, &mut known, &mut file_hashes, &audit);
+
+        #[cfg(target_os = "macos")]
+        std::thread::sleep(Duration::from_millis(50)); // yield to avoid busy spin on rapid events
     }
+}
+
+/// One pass over all watch targets: pick up new files in dirs and changes to
+/// singleton files. Shared by the macOS (kqueue-woken) and portable (polling)
+/// watch loops.
+fn poll_targets(
+    scanner: &Scanner,
+    models: &ModelEnsemble,
+    targets: &[WatchTarget],
+    known: &mut HashMap<PathBuf, HashSet<String>>,
+    file_hashes: &mut HashMap<PathBuf, [u8; 32]>,
+    audit: &AuditLog,
+) {
+    for target in targets.iter() {
+        if target.path.is_dir() {
+            let current = list_files_in(&target.path, target.recursive, target.ext_filter);
+            let known_set = known.entry(target.path.clone()).or_default();
+            let new_files: Vec<String> = current.iter()
+                .filter(|f| !known_set.contains(*f))
+                .cloned()
+                .collect();
+            for filename in &new_files {
+                let file_path = target.path.join(filename);
+                process_file(scanner, models, &file_path, target, audit, file_hashes);
+                known_set.insert(filename.clone());
+            }
+        } else if target.path.is_file() {
+            // Singleton file (CLAUDE.md, .claude.json) — change-detect by hash.
+            let hash = sha256(&fs::read(&target.path).unwrap_or_default());
+            let prev = file_hashes.get(&target.path).copied();
+            if prev.map(|h| h != hash).unwrap_or(false) {
+                eprintln!("[AEGIS] CHANGE DETECTED: {}", target.path.display());
+                let (sv, new_hash) = match target.format {
+                    Format::ClaudeMd => { let (v, h) = scan_claude_md(scanner, &target.path, &prev); (verdict_to_scored(v), h) }
+                    Format::McpConfig => { let (v, h) = scan_mcp_config(&target.path, &prev); (verdict_to_scored(v), h) }
+                    _ => {
+                        let content = fs::read_to_string(&target.path).unwrap_or_default();
+                        (cascade_scan(&content, scanner, true, models), hash)
+                    }
+                };
+                file_hashes.insert(target.path.clone(), new_hash);
+                audit.write_scored(&target.path, &sv, 0);
+                if !sv.is_allow() {
+                    eprintln!("[AEGIS] {}  {}  {}", sv.verdict.label(), target.path.display(), sv.summary());
+                    notify("AEGIS: agent config flagged", &format!("{}\n{}", target.path.display(), sv.summary()));
+                }
+            } else {
+                file_hashes.insert(target.path.clone(), hash);
+            }
+        }
+    }
+}
+
+/// Native desktop notification (best-effort, fire-and-forget). macOS via
+/// osascript, Linux via notify-send. Closes the "how is the user notified"
+/// gap for the background daemon, where stderr isn't visible.
+fn notify(title: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!("display notification {:?} with title {:?}", body, title);
+        let _ = std::process::Command::new("osascript").args(["-e", &script])
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send").args(["-u", "critical", title, body])
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    { let _ = (title, body); }
 }
 
 fn process_file(
@@ -1918,9 +2027,14 @@ fn process_file(
         Verdict::Quarantine { rule, .. } | Verdict::Block { reason: rule } => {
             eprintln!("[AEGIS] {}  {}  {}  ({elapsed_us}µs)",
                 sv.verdict.label(), path.display(), sv.summary());
-            if intercepted || matches!(target.format, Format::SkillFile | Format::MemoryFile) {
+            let moved = intercepted || matches!(target.format, Format::SkillFile | Format::MemoryFile);
+            if moved {
                 let _ = quarantine_file(&scan_path, rule);
             }
+            notify(
+                if moved { "AEGIS: attack quarantined" } else { "AEGIS: agent file flagged" },
+                &format!("{}\n{}", path.display(), rule),
+            );
         }
     }
 }
@@ -2201,7 +2315,7 @@ fn install_models() {
     // Single model: the unified judge. (L2 DeBERTa/ONNX dropped — redundant.)
     let downloads: &[(&str, &str, u64)] = &[
         (
-            // L3 unified judge — validated on 190 held-out files (75% recall,
+            // L2 unified judge — validated on 190 held-out files (75% recall,
             // 92% precision, 6% FP). Served by a persistent llama-server.
             "Qwen3-1.7B-Q8_0.gguf",
             "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf",
@@ -2252,31 +2366,64 @@ fn install_models() {
 fn usage() {
     eprintln!("aegis {AEGIS_VERSION} — Agent Guard and Intercept System");
     eprintln!("Usage:");
-    eprintln!("  aegis daemon              Watch all agent surfaces (Claude, Pilot, ...)");
-    eprintln!("  aegis scan <path>...      One-shot scan files or directories");
-    eprintln!("  aegis install-models      Download L2/L3 inference models (~1.3 GB)");
-    eprintln!("  aegis status              Tail audit log");
-    eprintln!("  aegis targets             List watch targets");
+    eprintln!("  aegis init                Write a default config and show setup");
+    eprintln!("  aegis daemon              Watch & protect all agent surfaces (Claude, Pilot, ...)");
+    eprintln!("  aegis scan <path>...      One-shot scan of files or directories");
+    eprintln!("  aegis install-models      Download the judge model (~1.8 GB)");
+    eprintln!("  aegis status              Tail the audit log (recent verdicts)");
+    eprintln!("  aegis targets             List the surfaces being protected");
+    eprintln!("  aegis config              Show effective configuration");
+    eprintln!("  aegis version             Print version");
     eprintln!("");
-    eprintln!("Extra watch targets: ~/.aegis/watch.toml");
-    eprintln!("  [[watch]]");
-    eprintln!("  path = \"/path/to/agent/inbox\"");
-    eprintln!("  format = \"generic\"   # pilot_inbox | skill | memory | generic");
-    eprintln!("  recursive = false");
+    eprintln!("Config: ~/.aegis/config.toml   ·   extra watch targets: ~/.aegis/watch.toml");
+}
+
+/// `aegis init` — write a default config (if absent) and tell the user what's next.
+fn cmd_init() {
+    let dir = dirs_home().join(".aegis");
+    let _ = fs::create_dir_all(&dir);
+    let cfg = config_path();
+    if cfg.exists() {
+        eprintln!("[AEGIS] config already exists: {}", cfg.display());
+    } else {
+        let _ = fs::write(&cfg, DEFAULT_CONFIG);
+        eprintln!("[AEGIS] wrote default config: {}", cfg.display());
+    }
+    eprintln!("");
+    eprintln!("Protecting these agent surfaces by default:");
+    for t in default_targets() { eprintln!("  • {}", t.path.display()); }
+    eprintln!("");
+    eprintln!("Next:");
+    eprintln!("  aegis install-models     # one-time, downloads the judge model (~1.8 GB)");
+    eprintln!("  aegis daemon             # start protecting (or: brew services start aegis)");
+}
+
+/// `aegis config` — show the effective settings.
+fn cmd_config() {
+    let cfg = load_config();
+    println!("config file : {}", config_path().display());
+    println!("judge        : {}", if cfg.judge_enabled { "enabled (L2 LLM)" } else { "disabled (L1 patterns only)" });
+    println!("judge model  : {}", cfg.judge_model.as_deref().unwrap_or("auto"));
+    println!("watch defaults: {}", cfg.watch_defaults);
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // Handle install-models before loading scanner/models (no noise output)
-    if args.get(1).map(|s| s.as_str()) == Some("install-models") {
-        install_models();
-        return;
+    // Commands that don't need the scanner/models loaded.
+    match args.get(1).map(|s| s.as_str()) {
+        Some("install-models") => { install_models(); return; }
+        Some("--version") | Some("-V") | Some("version") => { println!("aegis {AEGIS_VERSION}"); return; }
+        Some("--help") | Some("-h") | Some("help") => { usage(); return; }
+        Some("init") => { cmd_init(); return; }
+        Some("config") => { cmd_config(); return; }
+        _ => {}
     }
 
+    let cfg = load_config();
     let scanner = Scanner::new();
-    let models = ModelEnsemble::load();
-    let mut targets = default_targets();
+    let models = ModelEnsemble::load(&cfg);
+    let mut targets = if cfg.watch_defaults { default_targets() } else { vec![] };
     targets.extend(load_extra_targets());
 
     match args.get(1).map(|s| s.as_str()) {
