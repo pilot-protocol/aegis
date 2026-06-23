@@ -2710,6 +2710,36 @@ fn cmd_scan_result(scanner: &Scanner) {
     // Always exit 0 — PostToolUse hooks are non-blocking
 }
 
+/// `aegis scan-pipe` — general-purpose stdin scanner for external harnesses.
+/// Reads raw text from stdin, runs L1 (T1+T2) scan.
+/// exit 0 = clean, exit 2 = blocked (rule printed to stdout).
+/// Usage: echo "$untrusted" | aegis scan-pipe
+///        printf '%s' "$msg" | aegis scan-pipe
+fn cmd_scan_pipe(scanner: &Scanner) {
+    use std::io::Read;
+    let mut text = String::new();
+    std::io::stdin().read_to_string(&mut text).unwrap_or(0);
+    if text.trim().is_empty() { std::process::exit(0); }
+
+    // ctx_sensitive=true: include T2 patterns (skill/memory manipulation, persona hijack, etc.)
+    let verdict = scanner.scan_text(&text, true);
+    match verdict {
+        Verdict::Allow => std::process::exit(0),
+        Verdict::Quarantine { rule, .. } | Verdict::Block { reason: rule } => {
+            println!("[AEGIS] BLOCKED ({rule})");
+            let audit = AuditLog::new();
+            let sv = ScoredVerdict {
+                combined: 1.0,
+                verdict: Verdict::Quarantine { rule: rule.clone(), tier: 1 },
+                layers: vec![],
+                warn_rule: None,
+            };
+            audit.write_scored(Path::new("scan-pipe"), &sv, 0);
+            std::process::exit(2);
+        }
+    }
+}
+
 /// `aegis install-hooks` — write Claude Code hook entries to ~/.claude/settings.json.
 /// Uses the absolute path of the running binary so Claude Code always finds the right version.
 /// Safe to run multiple times; merges rather than replacing existing hook config.
@@ -2875,6 +2905,10 @@ fn main() {
         // Hook subcommands — L1 only, microsecond latency, no judge or model loading
         Some("scan-cmd") => { let s = Scanner::new(); cmd_scan_cmd(&s); return; }
         Some("scan-result") => { let s = Scanner::new(); cmd_scan_result(&s); return; }
+        // General-purpose stdin scanner: reads raw text from stdin, L1+T2 scan.
+        // exit 0 = clean, exit 2 = blocked (rule printed to stdout).
+        // Use: echo "$untrusted_text" | aegis scan-pipe
+        Some("scan-pipe") => { let s = Scanner::new(); cmd_scan_pipe(&s); return; }
         // One-time command approval bypass
         Some("approve") => {
             let cmd = args[2..].join(" ");
