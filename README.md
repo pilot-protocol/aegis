@@ -129,6 +129,63 @@ aegis approve '<cmd>'   # allow this exact command once
 aegis revoke  '<cmd>'   # cancel a pending approval
 ```
 
+## Other harness integrations
+
+AEGIS provides `aegis scan-pipe` — a stdin scanner that exits **0** (allow) or **2** (block) — so any harness can integrate in a few lines.
+
+### OpenClaw (TypeScript plugin)
+
+In `~/.openclaw/plugins/claw-pilot/src/inbound.ts`, before dispatching a message:
+
+```typescript
+import { spawnSync } from "node:child_process";
+
+const scan = spawnSync("aegis", ["scan-pipe"], {
+  input: message.text, encoding: "utf8", timeout: 500,
+});
+if (scan.status === 2) {
+  logger.warn("AEGIS blocked inbound message", { rule: scan.stdout.trim() });
+  return; // drop
+}
+```
+
+### PicoClaw (Node.js agent)
+
+In the tick loop, before `behavior.reply()`:
+
+```javascript
+import { spawnSync } from "child_process";
+
+const check = spawnSync("aegis", ["scan-pipe"], {
+  input: msg.data ?? "", encoding: "utf8", timeout: 500,
+});
+if (check.status === 2) {
+  console.warn(`[aegis] BLOCKED — ${check.stdout.trim()}`);
+  continue;
+}
+```
+
+### Hermes (Python `pre_llm_call` plugin)
+
+Copy [`integrations/hermes/plugin.py`](integrations/hermes/plugin.py) to `~/.hermes/plugins/aegis-security/plugin.py`. The `pre_llm_call` hook scans all message content and returns `None` to block:
+
+```python
+from aegis_hermes_plugin import pre_llm_call
+
+messages = pre_llm_call(messages)
+if messages is None:
+    raise RuntimeError("AEGIS blocked this LLM call")
+```
+
+The plugin fails open on timeout or if `aegis` is not on `$PATH`, so a misconfigured binary never kills your harness.
+
+### Generic — any harness or CI pipeline
+
+```bash
+echo "$CONTENT" | aegis scan-pipe
+# exits 0 → safe, exits 2 → blocked
+```
+
 ## How it works
 
 ```mermaid
@@ -243,6 +300,9 @@ The runner exits 1 if precision < 90% or recall < 80%, so it's usable in CI.
 | Injected bash commands (Claude Code) | `PreToolUse` hook |
 | Injected content in tool results / web fetches | `PostToolUse` hook |
 | MCP tool description injection | `PostToolUse/mcp__*` hook |
+| Inbound overlay messages (OpenClaw, PicoClaw) | `scan-pipe` in TypeScript/Node dispatch |
+| Pre-LLM messages (Hermes) | `pre_llm_call` Python plugin |
+| Generic CI / pipeline content | `scan-pipe` stdin |
 
 ## License
 
