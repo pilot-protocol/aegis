@@ -5,6 +5,7 @@
 use aho_corasick::AhoCorasick;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use sha2::{Digest, Sha256};
+use hmac::{Hmac, Mac};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -23,7 +24,7 @@ use unicode_normalization::UnicodeNormalization;
 // Versioning: bump AEGIS_VERSION when adding patterns.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const AEGIS_VERSION: &str = "0.1.3";
+const AEGIS_VERSION: &str = "0.1.4";
 
 /// Tier 1: high-confidence patterns — scanned everywhere, in all formats.
 /// These are unambiguous injection signals regardless of context.
@@ -478,13 +479,15 @@ impl Verdict {
 // hit the timeout and failed open to 0.0. The server is started lazily on first
 // use and reused (warm prompt cache) across scans and across daemon lifetime.
 
-const JUDGE_PORT: u16 = 8849;
+// Judge port is selected dynamically at startup to avoid port 8849 conflicts.
+// Stored in ~/.aegis/judge.port so multiple aegis instances share one server.
 const JUDGE_MODELS: &[&str] = &[
     "Qwen3-1.7B-Q8_0.gguf",   // primary — validated capable
     "Qwen3-0.6B-Q8_0.gguf",   // last-resort fallback (weak; only if 1.7B absent)
 ];
 
 pub struct IntentJudge {
+    port: u16,
     available: bool,
     model_path: PathBuf,
     server: std::sync::Mutex<Option<std::process::Child>>,
@@ -520,7 +523,9 @@ impl IntentJudge {
         } else {
             eprintln!("[AEGIS] Judge (L2): model not found — L2 disabled (run: aegis install-models)");
         }
+        let port = pick_judge_port();
         Self {
+            port,
             available,
             model_path,
             server: std::sync::Mutex::new(None),
@@ -530,6 +535,7 @@ impl IntentJudge {
 
     fn disabled(model_path: PathBuf) -> Self {
         Self {
+            port: 0,
             available: false,
             model_path,
             server: std::sync::Mutex::new(None),
@@ -547,17 +553,17 @@ impl IntentJudge {
         // remaining file pay the full startup wait. This is what turned a single
         // cold-start failure into a multi-minute, no-output directory-scan hang.
         if self.startup_failed.load(Relaxed) { return false; }
-        if http_health(JUDGE_PORT) { return true; }
+        if http_health(self.port) { return true; }
 
         let mut guard = match self.server.lock() { Ok(g) => g, Err(_) => return false };
         // Re-check after acquiring the lock (another thread may have started it).
-        if http_health(JUDGE_PORT) { return true; }
+        if http_health(self.port) { return true; }
 
         if guard.is_none() {
             match std::process::Command::new("llama-server")
                 .args([
                     "--model", self.model_path.to_str().unwrap_or(""),
-                    "--port", &JUDGE_PORT.to_string(),
+                    "--port", &self.port.to_string(),
                     "--host", "127.0.0.1",
                     "-ngl", "99",            // all layers to Metal
                     "-c", "4096",            // context — system+fewshot+input fits
@@ -587,11 +593,11 @@ impl IntentJudge {
                 if matches!(child.try_wait(), Ok(Some(_))) {
                     *guard = None;
                     self.startup_failed.store(true, Relaxed);
-                    eprintln!("[AEGIS] IntentJudge: llama-server exited during startup (port {} in use?) — L2 disabled this run", JUDGE_PORT);
+                    eprintln!("[AEGIS] IntentJudge: llama-server exited during startup (port {} in use?) — L2 disabled this run", self.port);
                     return false;
                 }
             }
-            if http_health(JUDGE_PORT) { return true; }
+            if http_health(self.port) { return true; }
             std::thread::sleep(Duration::from_millis(200));
         }
         self.startup_failed.store(true, Relaxed);
@@ -615,7 +621,7 @@ impl IntentJudge {
             "temperature": 0.0,
             "cache_prompt": true,   // reuse the long system/few-shot prefix
         });
-        let resp = http_post_json(JUDGE_PORT, "/v1/chat/completions", &body.to_string(), 15)?;
+        let resp = http_post_json(self.port, "/v1/chat/completions", &body.to_string(), 15)?;
         let v: Value = serde_json::from_str(&resp).ok()?;
         v.get("choices")?.get(0)?.get("message")?.get("content")
             .and_then(|c| c.as_str()).map(|s| s.to_lowercase())
@@ -1109,10 +1115,11 @@ impl Scanner {
 
     /// Scan text with both tiers. `ctx_sensitive` enables T2 patterns.
     fn scan_text(&self, text: &str, ctx_sensitive: bool) -> Verdict {
-        // System marker: position-aware — only at line start
-        let lower = text.to_lowercase();
-        if let Some(pos) = lower.find("[system]") {
-            let before = &lower[..pos];
+        // System marker: position-aware — only at line start.
+        // Use normalize() to catch homoglyph variants (е.g. Cyrillic 'е' for 'e').
+        let norm_for_marker = normalize(text);
+        if let Some(pos) = norm_for_marker.find("[system]") {
+            let before = &norm_for_marker[..pos];
             if before.is_empty() || before.ends_with('\n') {
                 return Verdict::Quarantine {
                     rule: "SYSTEM_MARKER".into(),
@@ -1833,7 +1840,13 @@ fn load_extra_targets() -> Vec<WatchTarget> {
             current_ext = None;
         } else if let Some(val) = line.strip_prefix("path = ") {
             let val = val.trim().trim_matches('"');
-            current_path = Some(PathBuf::from(val.replace("~", &dirs_home().to_string_lossy())));
+            let expanded = val.replace("~", &dirs_home().to_string_lossy());
+            if expanded.contains("..") {
+                eprintln!("[AEGIS] ALERT: watch.toml path contains '..' — rejected: {expanded}");
+                current_path = None;
+            } else {
+                current_path = Some(PathBuf::from(expanded));
+            }
         } else if let Some(val) = line.strip_prefix("format = ") {
             current_format = match val.trim().trim_matches('"') {
                 "pilot_inbox" => Format::PilotInbox,
@@ -1964,7 +1977,12 @@ fn quarantine_file(src: &Path, rule: &str) -> io::Result<()> {
 /// Rename-intercept: claim the file before Claude reads it.
 /// Returns the .aegis-scanning path to scan, or None on failure.
 fn intercept(path: &Path) -> Option<PathBuf> {
-    let staging = path.with_extension("aegis-scanning");
+    // Append ".aegis-scanning" to the full filename (not replace extension) so
+    // release() can recover any original extension, not just ".json".
+    let filename = path.file_name()?.to_os_string();
+    let mut new_name = filename;
+    new_name.push(".aegis-scanning");
+    let staging = path.with_file_name(new_name);
     match fs::rename(path, &staging) {
         Ok(_) => Some(staging),
         Err(_) => None, // File may have already been read or removed
@@ -1973,7 +1991,12 @@ fn intercept(path: &Path) -> Option<PathBuf> {
 
 /// Release an intercepted file back to its original name (ALLOW path).
 fn release(staging: &Path) -> io::Result<()> {
-    let original = staging.with_extension("json");
+    let name = staging.file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no filename"))?
+        .to_string_lossy();
+    let original_name = name.strip_suffix(".aegis-scanning")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a staging file"))?;
+    let original = staging.with_file_name(original_name);
     fs::rename(staging, original)
 }
 
@@ -1983,13 +2006,56 @@ fn release(staging: &Path) -> io::Result<()> {
 
 struct AuditLog {
     path: PathBuf,
+    key: [u8; 32],
 }
 
 impl AuditLog {
     fn new() -> Self {
         let dir = dirs_home().join(".aegis");
         fs::create_dir_all(&dir).ok();
-        Self { path: dir.join("audit.jsonl") }
+        let key_path = dir.join("audit.key");
+        let key = if key_path.exists() {
+            fs::read_to_string(&key_path)
+                .ok()
+                .and_then(|s| hex_to_bytes_32(s.trim()))
+                .unwrap_or_else(new_audit_key)
+        } else {
+            let k = new_audit_key();
+            let hex: String = k.iter().map(|b| format!("{:02x}", b)).collect();
+            let _ = fs::write(&key_path, &hex);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
+            }
+            k
+        };
+        Self { path: dir.join("audit.jsonl"), key }
+    }
+
+    fn last_hmac(&self) -> [u8; 32] {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = match fs::File::open(&self.path) {
+            Ok(f) => f,
+            Err(_) => return [0u8; 32],
+        };
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let tail_start = len.saturating_sub(4096);
+        let _ = f.seek(SeekFrom::Start(tail_start));
+        let mut tail = String::new();
+        let _ = f.read_to_string(&mut tail);
+        for line in tail.lines().rev() {
+            if line.trim().is_empty() { continue; }
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                if let Some(hex) = v.get("hmac").and_then(|h| h.as_str()) {
+                    if let Some(bytes) = hex_to_bytes_32(hex) {
+                        return bytes;
+                    }
+                }
+            }
+            break;
+        }
+        [0u8; 32]
     }
 
     fn write_scored(&self, path: &Path, sv: &ScoredVerdict, elapsed_us: u64) {
@@ -2010,7 +2076,15 @@ impl AuditLog {
             "layers": layers_obj,
             "us": elapsed_us,
         });
-        let mut entry = serde_json::to_string(&entry_val).unwrap_or_default();
+        // HMAC chain: each entry is signed over (prev_hmac || entry_json) so
+        // any tampering with or deletion of log entries is detectable.
+        let entry_json_no_hmac = serde_json::to_string(&entry_val).unwrap_or_default();
+        let prev_hmac = self.last_hmac();
+        let hmac = compute_audit_hmac(&self.key, &prev_hmac, entry_json_no_hmac.as_bytes());
+        let hmac_hex: String = hmac.iter().map(|b| format!("{:02x}", b)).collect();
+        let mut entry_obj = entry_val.as_object().unwrap().clone();
+        entry_obj.insert("hmac".into(), Value::String(hmac_hex));
+        let mut entry = serde_json::to_string(&Value::Object(entry_obj)).unwrap_or_default();
         entry.push('\n');
         if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&self.path) {
             let _ = f.write_all(entry.as_bytes());
@@ -2601,6 +2675,54 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
+fn new_audit_key() -> [u8; 32] {
+    use std::io::Read;
+    let mut key = [0u8; 32];
+    if let Ok(mut f) = fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut key);
+    }
+    key
+}
+
+fn hex_to_bytes_32(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 { return None; }
+    let bytes: Vec<u8> = (0..hex.len()).step_by(2)
+        .filter_map(|i| u8::from_str_radix(&hex[i..i+2], 16).ok())
+        .collect();
+    if bytes.len() == 32 {
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Some(arr)
+    } else {
+        None
+    }
+}
+
+fn compute_audit_hmac(key: &[u8; 32], prev: &[u8; 32], entry: &[u8]) -> [u8; 32] {
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC key length invariant");
+    mac.update(prev);
+    mac.update(entry);
+    let result = mac.finalize();
+    result.into_bytes().into()
+}
+
+fn pick_judge_port() -> u16 {
+    let port_file = dirs_home().join(".aegis/judge.port");
+    // Reuse an existing healthy server's port.
+    if let Ok(s) = fs::read_to_string(&port_file) {
+        if let Ok(p) = s.trim().parse::<u16>() {
+            if http_health(p) { return p; }
+        }
+    }
+    // Pick a free port via OS assignment.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .map(|l| l.local_addr().unwrap().port())
+        .unwrap_or(8849);
+    let _ = fs::write(&port_file, port.to_string());
+    port
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -2609,7 +2731,13 @@ fn unix_now() -> u64 {
 }
 
 fn dirs_home() -> PathBuf {
-    PathBuf::from(env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let p = PathBuf::from(&home);
+    // Reject injected HOME values: must be absolute and must not traverse up.
+    if !p.is_absolute() || home.contains("..") {
+        return PathBuf::from("/tmp");
+    }
+    p
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2698,6 +2826,76 @@ fn cmd_approve(cmd: &str) {
 /// which is an atomic POSIX unlink — no TOCTOU window.
 fn cmd_revoke(cmd: &str) {
     let _ = fs::remove_file(approved_dir().join(cmd_hash(cmd)));
+}
+
+fn cmd_verify_log() {
+    let log_path = dirs_home().join(".aegis/audit.jsonl");
+    let key_path = dirs_home().join(".aegis/audit.key");
+
+    if !key_path.exists() {
+        eprintln!("[AEGIS] No audit key at {} — log was written without HMAC chain (pre-v0.1.4)", key_path.display());
+        std::process::exit(1);
+    }
+    let key_hex = fs::read_to_string(&key_path).unwrap_or_default();
+    let key = match hex_to_bytes_32(key_hex.trim()) {
+        Some(k) => k,
+        None => {
+            eprintln!("[AEGIS] Corrupt audit key (expected 64 hex chars)");
+            std::process::exit(1);
+        }
+    };
+    let content = match fs::read_to_string(&log_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[AEGIS] Cannot read audit log: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut prev_hmac = [0u8; 32];
+    let mut ok = 0usize;
+    let mut bad = 0usize;
+
+    for (i, line) in content.lines().enumerate() {
+        if line.trim().is_empty() { continue; }
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("Line {}: JSON parse error", i + 1);
+                bad += 1;
+                continue;
+            }
+        };
+        let stored_hmac_hex = match v.get("hmac").and_then(|h| h.as_str()) {
+            Some(h) => h.to_string(),
+            None => {
+                eprintln!("Line {}: no hmac field (pre-v0.1.4 entry — skip)", i + 1);
+                bad += 1;
+                continue;
+            }
+        };
+        // Recompute HMAC over the entry without the hmac field.
+        let mut entry_obj = v.as_object().unwrap().clone();
+        entry_obj.remove("hmac");
+        let entry_json = serde_json::to_string(&Value::Object(entry_obj)).unwrap_or_default();
+        let expected = compute_audit_hmac(&key, &prev_hmac, entry_json.as_bytes());
+        let expected_hex: String = expected.iter().map(|b| format!("{:02x}", b)).collect();
+        if expected_hex == stored_hmac_hex {
+            ok += 1;
+            prev_hmac = expected;
+        } else {
+            eprintln!("[AEGIS] Line {}: HMAC MISMATCH — entry may have been tampered!", i + 1);
+            bad += 1;
+            prev_hmac = expected;
+        }
+    }
+
+    if bad == 0 {
+        println!("[AEGIS] Audit log intact: {} entries verified", ok);
+    } else {
+        eprintln!("[AEGIS] INTEGRITY FAILURE: {} entries failed, {} ok", bad, ok);
+        std::process::exit(1);
+    }
 }
 
 /// `aegis scan-cmd` — PreToolUse hook: scan a bash command string for exfil patterns.
@@ -2956,6 +3154,7 @@ fn usage() {
     eprintln!("  aegis status              Tail the audit log (recent verdicts)");
     eprintln!("  aegis targets             List the surfaces being protected");
     eprintln!("  aegis config              Show effective configuration");
+    eprintln!("  aegis verify-log          Verify HMAC chain integrity of audit.jsonl");
     eprintln!("  aegis version             Print version");
     eprintln!("");
     eprintln!("Config: ~/.aegis/config.toml   ·   extra watch targets: ~/.aegis/watch.toml");
@@ -3032,6 +3231,7 @@ fn main() {
             println!("[AEGIS] Revoked approval for: {cmd}");
             return;
         }
+        Some("verify-log") => { cmd_verify_log(); return; }
         _ => {}
     }
 
