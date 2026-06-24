@@ -310,6 +310,20 @@ fn homoglyph(c: char) -> char {
         c if ('\u{FF21}'..='\u{FF3A}').contains(&c) => {
             (b'a' + (c as u8 - 0x21)) as char // ff21→a, ff22→b, …
         }
+        // Fullwidth punctuation — gaps in the ranges above (FF3B–FF40, FF5B–FF60)
+        // U+FF3B `［` and U+FF3D `］` are fullwidth brackets that tokenize as [ ]
+        // in most LLMs and were not covered, allowing `［system］` to bypass
+        // the [system] marker check and T1 pattern matching entirely.
+        '\u{FF3B}' => '[', // ［ FULLWIDTH LEFT SQUARE BRACKET
+        '\u{FF3D}' => ']', // ］ FULLWIDTH RIGHT SQUARE BRACKET
+        '\u{FF3C}' => '\\', // ＼ FULLWIDTH REVERSE SOLIDUS
+        '\u{FF3E}' => '^', // ＾ FULLWIDTH CIRCUMFLEX ACCENT
+        '\u{FF5B}' => '{', // ｛ FULLWIDTH LEFT CURLY BRACKET
+        '\u{FF5D}' => '}', // ｝ FULLWIDTH RIGHT CURLY BRACKET
+        '\u{FF08}' => '(', // （ FULLWIDTH LEFT PARENTHESIS
+        '\u{FF09}' => ')', // ） FULLWIDTH RIGHT PARENTHESIS
+        '\u{FF1C}' => '<', // ＜ FULLWIDTH LESS-THAN SIGN
+        '\u{FF1E}' => '>', // ＞ FULLWIDTH GREATER-THAN SIGN
         // Armenian letters that look like Latin
         '\u{0531}' => 'u', // Ա ARMENIAN CAPITAL LETTER AYB (looks like U or D)
         '\u{0532}' => 'b', // Բ ARMENIAN CAPITAL LETTER BEN
@@ -1037,11 +1051,16 @@ pub fn cascade_scan(
         layers.push(j2);
         // Both judge passes returned SAFE.
         // T1 patterns and credential-taint are definitive — judge cannot veto them.
-        // T2-only hits are lower-confidence and the judge veto applies (reduces FP on ctx-sensitive content).
+        // T2-only hits are lower-confidence; judge veto applies EXCEPT for T2_WIN
+        // hits where the matched region lies outside the judge's head+tail window.
+        // For T2_WIN, re-call the judge on an excerpt centered on the actual match
+        // so the veto reflects content the judge actually saw.
         if let Some(ref rule) = l1_rule {
             if l1_score >= T_L1_DEFINITIVE {
-                let is_t2_only = rule.starts_with("T2:") || rule.starts_with("T2_WIN:");
-                if !is_t2_only {
+                let is_t2_head = rule.starts_with("T2:");
+                let is_t2_win = rule.starts_with("T2_WIN:");
+                if !is_t2_head && !is_t2_win {
+                    // T1 / CRED_TAINT / T1_WIN — quarantine unconditionally.
                     return ScoredVerdict {
                         combined: 1.0,
                         verdict: Verdict::Quarantine { rule: rule.clone(), tier: 1 },
@@ -1049,6 +1068,33 @@ pub fn cascade_scan(
                         warn_rule: None,
                     };
                 }
+                if is_t2_win {
+                    // T2_WIN hit came from the sliding window (middle of document).
+                    // The head+tail judge window may not have included the matched region,
+                    // so its SAFE verdict could be uninformed. Extract the region around
+                    // the matched pattern and judge it directly.
+                    let pattern_str = &rule["T2_WIN:".len()..];
+                    let norm_full = normalize(text);
+                    if let Some(match_pos) = norm_full.find(pattern_str) {
+                        let excerpt_start = match_pos.saturating_sub(800);
+                        let excerpt_end = (match_pos + pattern_str.len() + 800).min(norm_full.len());
+                        let excerpt = &norm_full[excerpt_start..excerpt_end];
+                        let j3 = models.l2.judge(excerpt);
+                        if j3.score >= 0.5 {
+                            let j3_rule = j3.rule.clone()
+                                .unwrap_or_else(|| format!("JUDGE:t2win-excerpt:{pattern_str}"));
+                            layers.push(j3);
+                            return ScoredVerdict {
+                                combined: 1.0,
+                                verdict: Verdict::Quarantine { rule: j3_rule, tier: 3 },
+                                layers, warn_rule: None,
+                            };
+                        }
+                        layers.push(j3);
+                        // Excerpt judge also SAFE — veto applies for this T2_WIN hit.
+                    }
+                }
+                // T2 head or T2_WIN with SAFE excerpt judge — veto applies below.
             }
         }
         // T2-only or no L1 hit — SAFE judge veto applies.
@@ -2024,21 +2070,31 @@ impl AuditLog {
         let dir = dirs_home().join(".aegis");
         fs::create_dir_all(&dir).ok();
         let key_path = dir.join("audit.key");
-        let key = if key_path.exists() {
-            fs::read_to_string(&key_path)
-                .ok()
-                .and_then(|s| hex_to_bytes_32(s.trim()))
-                .unwrap_or_else(new_audit_key)
-        } else {
+        let key = {
+            // Atomically create the key file (O_CREAT|O_EXCL) so concurrent processes
+            // don't each generate a distinct key and overwrite each other, causing HMAC
+            // mismatch for entries written by the process whose key lost the race.
+            use std::io::Write as _;
             let k = new_audit_key();
             let hex: String = k.iter().map(|b| format!("{:02x}", b)).collect();
-            let _ = fs::write(&key_path, &hex);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
+            match fs::OpenOptions::new().write(true).create_new(true).open(&key_path) {
+                Ok(mut f) => {
+                    let _ = f.write_all(hex.as_bytes());
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
+                    }
+                    k
+                }
+                Err(_) => {
+                    // File already exists (another process created it) — load the winner's key.
+                    fs::read_to_string(&key_path)
+                        .ok()
+                        .and_then(|s| hex_to_bytes_32(s.trim()))
+                        .unwrap_or(k) // last resort: use our generated key (log entries won't chain)
+                }
             }
-            k
         };
         Self { path: dir.join("audit.jsonl"), key }
     }
@@ -2050,7 +2106,10 @@ impl AuditLog {
             Err(_) => return [0u8; 32],
         };
         let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-        let tail_start = len.saturating_sub(4096);
+        // 8 KB tail: a single audit entry is ~300 bytes; 4 KB could strand the last
+        // entry across the boundary, causing last_hmac() to silently return the
+        // second-to-last entry's HMAC and permanently diverging the chain.
+        let tail_start = len.saturating_sub(8192);
         let _ = f.seek(SeekFrom::Start(tail_start));
         let mut tail = String::new();
         let _ = f.read_to_string(&mut tail);
@@ -2728,44 +2787,40 @@ fn compute_audit_hmac(key: &[u8; 32], prev: &[u8; 32], entry: &[u8]) -> [u8; 32]
 }
 
 fn pick_judge_connection() -> (u16, String) {
-    let port_file = dirs_home().join(".aegis/judge.port");
-    let key_file  = dirs_home().join(".aegis/judge.apikey");
+    // State file stores "port:keyhex\n" — written atomically via tmp+rename so that
+    // two concurrent processes can't observe a half-written state (TOCTOU: previously
+    // key and port were two separate writes with a race window between them where
+    // a reader could see the new key but the old/missing port, or vice versa).
+    let state_file = dirs_home().join(".aegis/judge.state");
 
-    // Load (or generate) the API key. The key is stable across restarts so that
-    // multiple aegis processes can share the same llama-server instance.
-    let api_key = if key_file.exists() {
-        fs::read_to_string(&key_file)
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-
-    // Reuse an existing healthy server only if we can authenticate against it.
-    // This prevents a pre-seeded judge.port file from routing judge queries to
-    // an attacker-controlled HTTP listener (A1 in the v0.1.4 adversarial report).
-    if !api_key.is_empty() {
-        if let Ok(s) = fs::read_to_string(&port_file) {
-            if let Ok(p) = s.trim().parse::<u16>() {
-                if http_health_with_key(p, &api_key) { return (p, api_key); }
+    // Try to reuse an existing healthy server.
+    if let Ok(s) = fs::read_to_string(&state_file) {
+        let s = s.trim();
+        if let Some((port_str, key_str)) = s.split_once(':') {
+            if let Ok(p) = port_str.parse::<u16>() {
+                if !key_str.is_empty() && http_health_with_key(p, key_str) {
+                    return (p, key_str.to_string());
+                }
             }
         }
     }
 
-    // Need a fresh server — generate a new API key and pick a free port.
+    // Need a fresh server — pick port and key, write atomically.
     let new_key_bytes = new_audit_key();
     let new_key: String = new_key_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-    let _ = fs::write(&key_file, &new_key);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600));
-    }
-
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .map(|l| l.local_addr().unwrap().port())
         .unwrap_or(8849);
-    let _ = fs::write(&port_file, port.to_string());
+    let content = format!("{port}:{new_key}\n");
+    let tmp = state_file.with_extension("tmp");
+    if fs::write(&tmp, &content).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+        }
+        let _ = fs::rename(&tmp, &state_file);
+    }
     (port, new_key)
 }
 
