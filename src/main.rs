@@ -235,6 +235,21 @@ const ZWC: &[char] = &[
     '\u{115F}', // HANGUL CHOSEONG FILLER
     '\u{1160}', // HANGUL JUNGSEONG FILLER
     '\u{3000}', // IDEOGRAPHIC SPACE (fullwidth space — looks like a space, isn't ASCII)
+    // Unicode Zs (space separator) category — visually identical to ASCII space, breaks AC matching
+    '\u{00A0}', // NO-BREAK SPACE
+    '\u{2000}', // EN QUAD
+    '\u{2001}', // EM QUAD
+    '\u{2002}', // EN SPACE
+    '\u{2003}', // EM SPACE
+    '\u{2004}', // THREE-PER-EM SPACE
+    '\u{2005}', // FOUR-PER-EM SPACE
+    '\u{2006}', // SIX-PER-EM SPACE
+    '\u{2007}', // FIGURE SPACE
+    '\u{2008}', // PUNCTUATION SPACE
+    '\u{2009}', // THIN SPACE
+    '\u{200A}', // HAIR SPACE
+    '\u{202F}', // NARROW NO-BREAK SPACE
+    '\u{205F}', // MEDIUM MATHEMATICAL SPACE
 ];
 
 /// Map visually-ambiguous homoglyphs to their Latin equivalents.
@@ -256,6 +271,11 @@ fn homoglyph(c: char) -> char {
         '\u{041C}' => 'm', // М CYRILLIC CAPITAL EM
         '\u{041D}' => 'h', // Н CYRILLIC CAPITAL EN
         '\u{0422}' => 't', // Т CYRILLIC CAPITAL TE
+        '\u{0442}' => 't', // т CYRILLIC SMALL TE
+        '\u{043C}' => 'm', // м CYRILLIC SMALL EM
+        '\u{043D}' => 'h', // н CYRILLIC SMALL EN (looks like h)
+        '\u{0410}' => 'a', // А CYRILLIC CAPITAL A
+        '\u{0415}' => 'e', // Е CYRILLIC CAPITAL IE
         // Greek
         '\u{03BF}' => 'o', // ο GREEK SMALL OMICRON
         '\u{03B9}' => 'i', // ι GREEK SMALL IOTA
@@ -340,9 +360,20 @@ fn is_invisible(c: char) -> bool {
 
 fn normalize(text: &str) -> String {
     let is_zwc: HashSet<char> = ZWC.iter().copied().collect();
+    // NFD then filter: decompose so combining marks are separate codepoints, then strip them.
+    // This removes combining diacritical overlays (U+0300–U+036F) that visually alter letters
+    // without changing their ASCII representation, e.g. i̶g̶n̶o̶r̶e̶ → ignore.
     let cleaned: String = text
-        .nfc()
-        .filter(|c| !is_zwc.contains(c) && !is_invisible(*c))
+        .nfd()
+        .filter(|c| {
+            let cp = *c as u32;
+            // Keep if: not ZWC, not invisible, not a combining diacritical mark (Mn category approx)
+            !is_zwc.contains(c)
+                && !is_invisible(*c)
+                && !(0x0300..=0x036F).contains(&cp)  // Combining Diacritical Marks block
+                && !(0x1DC0..=0x1DFF).contains(&cp)  // Combining Diacritical Marks Supplement
+                && !(0x20D0..=0x20FF).contains(&cp)  // Combining Diacritical Marks for Symbols
+        })
         .map(homoglyph)
         .collect();
     cleaned.to_lowercase()
@@ -988,7 +1019,23 @@ pub fn cascade_scan(
             };
         }
         layers.push(j2);
-        // Both SAFE — veto any L1 keyword hit, but surface a WARN if L1 fired.
+        // Both judge passes returned SAFE.
+        // T1 patterns and credential-taint are definitive — judge cannot veto them.
+        // T2-only hits are lower-confidence and the judge veto applies (reduces FP on ctx-sensitive content).
+        if let Some(ref rule) = l1_rule {
+            if l1_score >= T_L1_DEFINITIVE {
+                let is_t2_only = rule.starts_with("T2:") || rule.starts_with("T2_WIN:");
+                if !is_t2_only {
+                    return ScoredVerdict {
+                        combined: 1.0,
+                        verdict: Verdict::Quarantine { rule: rule.clone(), tier: 1 },
+                        layers,
+                        warn_rule: None,
+                    };
+                }
+            }
+        }
+        // T2-only or no L1 hit — SAFE judge veto applies.
         let warn = l1_rule.filter(|_| l1_score >= T_L1_DEFINITIVE);
         return ScoredVerdict { combined: 0.0, verdict: Verdict::Allow, layers, warn_rule: warn };
     }
@@ -1021,6 +1068,9 @@ pub struct Scanner {
 }
 
 const SCAN_WINDOW: usize = 4096; // Only scan first N chars — injections front-load
+/// Maximum file size to read. Files larger than this are quarantined with SIZE_EXCEEDED
+/// rather than loaded into memory — prevents OOM from a single large hostile file.
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 
 impl Scanner {
     pub fn new() -> Self {
@@ -1546,6 +1596,16 @@ fn collect_json_strings(val: &Value, out: &mut Vec<String>) {
 }
 
 fn extract_pilot_inbox_text(path: &Path) -> Result<String, ScoredVerdict> {
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > MAX_FILE_BYTES {
+            return Err(ScoredVerdict {
+                combined: 1.0,
+                layers: vec![],
+                verdict: Verdict::Quarantine { rule: "SIZE_EXCEEDED".into(), tier: 1 },
+                warn_rule: None,
+            });
+        }
+    }
     let raw = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => return Err(ScoredVerdict::block(format!("read error: {e}"))),
@@ -1582,6 +1642,16 @@ fn extract_pilot_inbox_text(path: &Path) -> Result<String, ScoredVerdict> {
 }
 
 fn extract_skill_text(path: &Path) -> Result<String, ScoredVerdict> {
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > MAX_FILE_BYTES {
+            return Err(ScoredVerdict {
+                combined: 1.0,
+                layers: vec![],
+                verdict: Verdict::Quarantine { rule: "SIZE_EXCEEDED".into(), tier: 1 },
+                warn_rule: None,
+            });
+        }
+    }
     // Scan the full file — frontmatter fields (name, description) are read by
     // the agent and can carry hidden instructions. Don't strip them.
     match fs::read_to_string(path) {
@@ -1591,6 +1661,16 @@ fn extract_skill_text(path: &Path) -> Result<String, ScoredVerdict> {
 }
 
 fn extract_memory_text(path: &Path) -> Result<String, ScoredVerdict> {
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > MAX_FILE_BYTES {
+            return Err(ScoredVerdict {
+                combined: 1.0,
+                layers: vec![],
+                verdict: Verdict::Quarantine { rule: "SIZE_EXCEEDED".into(), tier: 1 },
+                warn_rule: None,
+            });
+        }
+    }
     match fs::read_to_string(path) {
         Ok(s) => Ok(s),
         Err(e) => Err(ScoredVerdict::block(format!("read error: {e}"))),
@@ -1598,6 +1678,16 @@ fn extract_memory_text(path: &Path) -> Result<String, ScoredVerdict> {
 }
 
 fn extract_generic_text(path: &Path) -> Result<String, ScoredVerdict> {
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > MAX_FILE_BYTES {
+            return Err(ScoredVerdict {
+                combined: 1.0,
+                layers: vec![],
+                verdict: Verdict::Quarantine { rule: "SIZE_EXCEEDED".into(), tier: 1 },
+                warn_rule: None,
+            });
+        }
+    }
     let content = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => return Err(ScoredVerdict::block(format!("read error: {e}"))),
@@ -1908,13 +1998,20 @@ impl AuditLog {
             Verdict::Quarantine { rule, .. } => rule.clone(),
             Verdict::Block { reason } => reason.clone(),
         };
-        let layers_json = sv.layers.iter()
-            .map(|l| format!("\"{}\":{:.2}", l.name, l.score))
-            .collect::<Vec<_>>().join(",");
-        let entry = format!(
-            "{{\"ts\":{},\"path\":\"{}\",\"verdict\":\"{}\",\"rule\":\"{}\",\"combined\":{:.2},\"layers\":{{{}}},\"us\":{}}}\n",
-            unix_now(), path.display(), sv.verdict.label(), rule, sv.combined, layers_json, elapsed_us,
-        );
+        let layers_obj: serde_json::Map<String, Value> = sv.layers.iter()
+            .map(|l| (l.name.to_string(), serde_json::json!(l.score)))
+            .collect();
+        let entry_val = serde_json::json!({
+            "ts": unix_now(),
+            "path": path.display().to_string(),
+            "verdict": sv.verdict.label(),
+            "rule": rule,
+            "combined": sv.combined,
+            "layers": layers_obj,
+            "us": elapsed_us,
+        });
+        let mut entry = serde_json::to_string(&entry_val).unwrap_or_default();
+        entry.push('\n');
         if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&self.path) {
             let _ = f.write_all(entry.as_bytes());
         }
@@ -2079,8 +2176,12 @@ fn poll_targets(
                 .collect();
             for filename in &new_files {
                 let file_path = target.path.join(filename);
-                process_file(scanner, models, &file_path, target, audit, file_hashes);
-                known_set.insert(filename.clone());
+                let processed = process_file(scanner, models, &file_path, target, audit, file_hashes);
+                if processed {
+                    known_set.insert(filename.clone());
+                }
+                // If process_file returned false (intercept failed — file already consumed),
+                // do NOT add to known_set so we retry on the next poll cycle.
             }
         } else if target.path.is_file() {
             // Singleton file (CLAUDE.md, .claude.json) — change-detect by hash.
@@ -2142,6 +2243,8 @@ fn wait_for_settle(path: &Path) {
     }
 }
 
+/// Returns true if the file was processed (successfully intercepted or non-inbox),
+/// false if the intercept rename failed (file already consumed by another reader).
 fn process_file(
     scanner: &Scanner,
     models: &ModelEnsemble,
@@ -2149,7 +2252,7 @@ fn process_file(
     target: &WatchTarget,
     audit: &AuditLog,
     file_hashes: &mut HashMap<PathBuf, [u8; 32]>,
-) {
+) -> bool {
     // Let the writer finish before we claim/read the file (avoids partial reads).
     wait_for_settle(path);
 
@@ -2161,7 +2264,7 @@ fn process_file(
             scan_path = staging;
             intercepted = true;
         } else {
-            return; // Couldn't intercept — file already gone
+            return false; // Couldn't intercept — file already gone or consumed
         }
     } else {
         scan_path = path.to_path_buf();
@@ -2220,6 +2323,7 @@ fn process_file(
             );
         }
     }
+    true
 }
 
 fn baseline_scan(
@@ -2570,44 +2674,30 @@ fn install_models() {
     eprintln!("[AEGIS] All models installed to {}", models_dir.display());
 }
 
-/// Allowlist for one-time command approvals. Entries are SHA-256 hashes of the
-/// approved command string, stored in ~/.aegis/approved_cmds.txt (one hash per line).
-fn allowlist_path() -> PathBuf { dirs_home().join(".aegis/approved_cmds.txt") }
-
 fn cmd_hash(cmd: &str) -> String {
     sha256(cmd.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Directory for per-hash approval tokens. Each approval is a separate file named
+/// by its SHA-256 hash — consumption is a POSIX atomic unlink (fs::remove_file),
+/// eliminating the read-modify-write race of the old single-file allowlist.
+fn approved_dir() -> PathBuf { dirs_home().join(".aegis/approved") }
+
 fn cmd_is_approved(cmd: &str) -> bool {
-    let hash = cmd_hash(cmd);
-    if let Ok(content) = fs::read_to_string(allowlist_path()) {
-        content.lines().any(|l| l.trim() == hash)
-    } else {
-        false
-    }
+    approved_dir().join(cmd_hash(cmd)).exists()
 }
 
 fn cmd_approve(cmd: &str) {
-    let hash = cmd_hash(cmd);
-    let path = allowlist_path();
-    if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
-    let existing = fs::read_to_string(&path).unwrap_or_default();
-    if !existing.lines().any(|l| l.trim() == hash) {
-        let _ = fs::OpenOptions::new().create(true).append(true).open(&path)
-            .and_then(|mut f| { use std::io::Write; f.write_all(format!("{hash}\n").as_bytes()) });
-    }
+    let dir = approved_dir();
+    let _ = fs::create_dir_all(&dir);
+    let token = dir.join(cmd_hash(cmd));
+    let _ = fs::write(&token, b"");
 }
 
+/// Consume (one-time) or explicitly revoke an approval. Uses fs::remove_file
+/// which is an atomic POSIX unlink — no TOCTOU window.
 fn cmd_revoke(cmd: &str) {
-    let hash = cmd_hash(cmd);
-    let path = allowlist_path();
-    if let Ok(content) = fs::read_to_string(&path) {
-        let filtered: String = content.lines()
-            .filter(|l| l.trim() != hash)
-            .map(|l| format!("{l}\n"))
-            .collect();
-        let _ = fs::write(&path, filtered);
-    }
+    let _ = fs::remove_file(approved_dir().join(cmd_hash(cmd)));
 }
 
 /// `aegis scan-cmd` — PreToolUse hook: scan a bash command string for exfil patterns.
@@ -2636,10 +2726,14 @@ fn cmd_scan_cmd(scanner: &Scanner) {
         std::process::exit(0);
     }
 
-    // L1 only — judge is too slow for blocking PreToolUse hooks
-    let verdict = scanner.scan_text(&cmd_text, false);
+    // T2 patterns are Aho-Corasick (microseconds, same cost as T1) — enable them here.
+    let verdict = scanner.scan_text(&cmd_text, true);
     match verdict {
-        Verdict::Allow => std::process::exit(0),
+        Verdict::Allow => {
+            let audit = AuditLog::new();
+            audit.write_scored(Path::new("hook:Bash"), &ScoredVerdict::allow(), 0);
+            std::process::exit(0);
+        }
         Verdict::Quarantine { rule, .. } | Verdict::Block { reason: rule } => {
             println!("AEGIS blocked this command ({rule}).");
             println!("To approve this exact command once, run:");
@@ -2689,8 +2783,8 @@ fn cmd_scan_result(scanner: &Scanner) {
 
     if content.is_empty() { return; }
 
-    // L1 only — judge is too slow for post-tool hooks on every call
-    let verdict = scanner.scan_text(&content, false);
+    // T2 patterns are Aho-Corasick (microseconds, same cost as T1) — enable them here.
+    let verdict = scanner.scan_text(&content, true);
     match verdict {
         Verdict::Allow => {}
         Verdict::Quarantine { rule, .. } | Verdict::Block { reason: rule } => {
@@ -2715,10 +2809,18 @@ fn cmd_scan_result(scanner: &Scanner) {
 /// exit 0 = clean, exit 2 = blocked (rule printed to stdout).
 /// Usage: echo "$untrusted" | aegis scan-pipe
 ///        printf '%s' "$msg" | aegis scan-pipe
+/// Maximum stdin size for scan-pipe. Inputs larger than this exit 2 (block) to prevent
+/// OOM from an unbounded read — harnesses must chunk large content themselves.
+const MAX_SCAN_PIPE_BYTES: usize = 4 * 1024 * 1024; // 4 MB
+
 fn cmd_scan_pipe(scanner: &Scanner) {
     use std::io::Read;
     let mut text = String::new();
-    std::io::stdin().read_to_string(&mut text).unwrap_or(0);
+    std::io::stdin().take(MAX_SCAN_PIPE_BYTES as u64 + 1).read_to_string(&mut text).unwrap_or(0);
+    if text.len() > MAX_SCAN_PIPE_BYTES {
+        println!("[AEGIS] BLOCKED (SIZE_EXCEEDED: input exceeds 4 MB limit)");
+        std::process::exit(2);
+    }
     if text.trim().is_empty() { std::process::exit(0); }
 
     // ctx_sensitive=true: include T2 patterns (skill/memory manipulation, persona hijack, etc.)

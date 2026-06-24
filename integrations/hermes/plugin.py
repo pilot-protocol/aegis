@@ -5,7 +5,8 @@ Install: copy this file to ~/.hermes/plugins/aegis-security/plugin.py
          (or register it in ~/.hermes/config.yaml under plugins:)
 
 Hook surface: pre_llm_call(messages) — called by Hermes before each LLM
-request. Return the message list unchanged to allow, return None to block.
+request. Returns messages unchanged (allow) or raises AegisBlockedError (block).
+Callers must NOT catch AegisBlockedError unless they intend to suppress it.
 """
 
 import subprocess
@@ -17,6 +18,13 @@ import pathlib
 
 _AUDIT_LOG = pathlib.Path.home() / ".aegis" / "audit.jsonl"
 _AEGIS_TIMEOUT = float(os.environ.get("AEGIS_TIMEOUT_SEC", "0.5"))
+
+
+class AegisBlockedError(RuntimeError):
+    """Raised when AEGIS blocks a pre-LLM message. Do not catch and silently ignore."""
+    def __init__(self, rule: str) -> None:
+        self.rule = rule
+        super().__init__(f"AEGIS blocked LLM call: {rule}")
 
 
 def _extract_text(messages: list) -> str:
@@ -32,7 +40,7 @@ def _extract_text(messages: list) -> str:
     return "\n".join(parts)
 
 
-def _audit(verdict: str, rule: str, preview: str) -> None:
+def _audit(verdict: str, rule: str, preview_hash: str) -> None:
     _AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
     entry = {
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -40,14 +48,21 @@ def _audit(verdict: str, rule: str, preview: str) -> None:
         "hook": "pre_llm_call",
         "verdict": verdict,
         "rule": rule,
-        "preview": preview[:120],
+        # Hash instead of plaintext to avoid leaking system-prompt secrets into
+        # the audit log (which is mode 0644 by default).
+        "preview_sha256": preview_hash,
     }
     with _AUDIT_LOG.open("a") as f:
         f.write(json.dumps(entry) + "\n")
 
 
-def pre_llm_call(messages: list) -> list | None:
-    """AEGIS pre-LLM hook for Hermes. Returns messages unchanged or None to block."""
+def _sha256_hex(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def pre_llm_call(messages: list) -> list:
+    """AEGIS pre-LLM hook for Hermes. Returns messages or raises AegisBlockedError."""
     text = _extract_text(messages)
     if not text.strip():
         return messages
@@ -61,19 +76,22 @@ def pre_llm_call(messages: list) -> list | None:
             timeout=_AEGIS_TIMEOUT,
         )
     except FileNotFoundError:
-        # aegis not on PATH — warn once, then pass through
         print("[aegis] WARNING: aegis binary not found; install from https://github.com/pilot-protocol/aegis", file=sys.stderr)
         return messages
     except subprocess.TimeoutExpired:
-        # scan timed out — fail open (don't block production on timeouts)
         print("[aegis] WARNING: scan-pipe timed out; passing through", file=sys.stderr)
         return messages
 
     if proc.returncode == 2:
         rule = proc.stdout.strip() or "unknown rule"
-        _audit("BLOCK", rule, text[:120])
-        print(f"[aegis] BLOCKED by Hermes hook — {rule}", file=sys.stderr)
-        return None  # signals Hermes to abort this LLM call
+        _audit("BLOCK", rule, _sha256_hex(text))
+        raise AegisBlockedError(rule)
 
-    _audit("ALLOW", "", text[:120])
+    if proc.returncode != 0:
+        # Crash / OOM / signal — treat as block (fail closed on unexpected exits)
+        rule = f"AEGIS_ERROR:exit{proc.returncode}"
+        _audit("BLOCK", rule, _sha256_hex(text))
+        raise AegisBlockedError(rule)
+
+    _audit("ALLOW", "", _sha256_hex(text))
     return messages
