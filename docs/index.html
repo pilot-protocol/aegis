@@ -65,12 +65,28 @@
     }
 
     .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       font-family: var(--mono);
       font-weight: 700;
       font-size: 16px;
       color: var(--orange);
       letter-spacing: 0.05em;
       text-decoration: none;
+    }
+
+    .nav-logo img {
+      height: 26px;
+      width: 26px;
+      filter: brightness(0) saturate(100%) invert(37%) sepia(84%) saturate(1832%) hue-rotate(2deg) brightness(103%) contrast(106%);
+    }
+
+    .hero-logo {
+      width: 72px;
+      height: 72px;
+      margin-bottom: 28px;
+      filter: brightness(0) saturate(100%) invert(37%) sepia(84%) saturate(1832%) hue-rotate(2deg) brightness(103%) contrast(106%);
     }
 
     .nav-version {
@@ -715,7 +731,10 @@
 <!-- ── NAV ──────────────────────────────────────────────────────────────── -->
 <nav>
   <div class="nav-left">
-    <a href="#" class="nav-logo">AEGIS</a>
+    <a href="#" class="nav-logo">
+      <img src="assets/logo.svg" alt="">
+      AEGIS
+    </a>
     <span class="nav-version">v0.1.4</span>
   </div>
   <div class="nav-right">
@@ -731,6 +750,7 @@
 
 <!-- ── HERO ──────────────────────────────────────────────────────────────── -->
 <div class="hero">
+  <img src="assets/logo.svg" alt="AEGIS" class="hero-logo">
   <div class="hero-overline">Pilot Protocol · Open Source · Apache 2.0</div>
   <h1>SkillSpector scans before install.<br><em>AEGIS watches after.</em></h1>
   <p class="hero-sub">
