@@ -5,8 +5,8 @@
 <h1 align="center">AEGIS</h1>
 
 <p align="center">
-  A local Rust daemon that blocks prompt injection before it reaches your AI agent.<br>
-  880 KB binary · offline · no GPU · macOS &amp; Linux
+  Block prompt injection before your agent reads it.<br>
+  <sub>880 KB binary · offline · no GPU · macOS &amp; Linux · built by the <a href="https://github.com/pilot-protocol">Pilot Protocol</a> team</sub>
 </p>
 
 <p align="center">
