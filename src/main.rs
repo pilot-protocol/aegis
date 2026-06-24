@@ -488,6 +488,7 @@ const JUDGE_MODELS: &[&str] = &[
 
 pub struct IntentJudge {
     port: u16,
+    api_key: String,
     available: bool,
     model_path: PathBuf,
     server: std::sync::Mutex<Option<std::process::Child>>,
@@ -523,9 +524,10 @@ impl IntentJudge {
         } else {
             eprintln!("[AEGIS] Judge (L2): model not found — L2 disabled (run: aegis install-models)");
         }
-        let port = pick_judge_port();
+        let (port, api_key) = pick_judge_connection();
         Self {
             port,
+            api_key,
             available,
             model_path,
             server: std::sync::Mutex::new(None),
@@ -536,6 +538,7 @@ impl IntentJudge {
     fn disabled(model_path: PathBuf) -> Self {
         Self {
             port: 0,
+            api_key: String::new(),
             available: false,
             model_path,
             server: std::sync::Mutex::new(None),
@@ -553,11 +556,11 @@ impl IntentJudge {
         // remaining file pay the full startup wait. This is what turned a single
         // cold-start failure into a multi-minute, no-output directory-scan hang.
         if self.startup_failed.load(Relaxed) { return false; }
-        if http_health(self.port) { return true; }
+        if http_health_with_key(self.port, &self.api_key) { return true; }
 
         let mut guard = match self.server.lock() { Ok(g) => g, Err(_) => return false };
         // Re-check after acquiring the lock (another thread may have started it).
-        if http_health(self.port) { return true; }
+        if http_health_with_key(self.port, &self.api_key) { return true; }
 
         if guard.is_none() {
             match std::process::Command::new("llama-server")
@@ -565,6 +568,7 @@ impl IntentJudge {
                     "--model", self.model_path.to_str().unwrap_or(""),
                     "--port", &self.port.to_string(),
                     "--host", "127.0.0.1",
+                    "--api-key", &self.api_key,  // authenticate judge requests
                     "-ngl", "99",            // all layers to Metal
                     "-c", "4096",            // context — system+fewshot+input fits
                     "--reasoning-budget", "0", // suppress Qwen3 thinking tokens
@@ -597,7 +601,7 @@ impl IntentJudge {
                     return false;
                 }
             }
-            if http_health(self.port) { return true; }
+            if http_health_with_key(self.port, &self.api_key) { return true; }
             std::thread::sleep(Duration::from_millis(200));
         }
         self.startup_failed.store(true, Relaxed);
@@ -621,7 +625,7 @@ impl IntentJudge {
             "temperature": 0.0,
             "cache_prompt": true,   // reuse the long system/few-shot prefix
         });
-        let resp = http_post_json(self.port, "/v1/chat/completions", &body.to_string(), 15)?;
+        let resp = http_post_json(self.port, "/v1/chat/completions", &body.to_string(), &self.api_key, 15)?;
         let v: Value = serde_json::from_str(&resp).ok()?;
         v.get("choices")?.get(0)?.get("message")?.get("content")
             .and_then(|c| c.as_str()).map(|s| s.to_lowercase())
@@ -791,24 +795,29 @@ first.\" => NORMAL\n\
 // TcpStream client keeps the binary dependency-light.
 
 fn http_health(port: u16) -> bool {
-    http_get(port, "/health", 2).map(|r| r.contains("\"status\":\"ok\"") || r.contains("200")).unwrap_or(false)
+    http_get(port, "/health", 2, "").map(|r| r.contains("\"status\":\"ok\"") || r.contains("200")).unwrap_or(false)
 }
 
-fn http_get(port: u16, path: &str, timeout_secs: u64) -> Option<String> {
+fn http_health_with_key(port: u16, key: &str) -> bool {
+    http_get(port, "/health", 2, key).map(|r| r.contains("\"status\":\"ok\"") || r.contains("200")).unwrap_or(false)
+}
+
+fn http_get(port: u16, path: &str, timeout_secs: u64, auth_key: &str) -> Option<String> {
     use std::io::{Read, Write};
     let mut s = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         Duration::from_secs(timeout_secs),
     ).ok()?;
     s.set_read_timeout(Some(Duration::from_secs(timeout_secs))).ok()?;
-    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let auth_header = if auth_key.is_empty() { String::new() } else { format!("Authorization: Bearer {auth_key}\r\n") };
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth_header}Connection: close\r\n\r\n");
     s.write_all(req.as_bytes()).ok()?;
     let mut buf = String::new();
     s.read_to_string(&mut buf).ok()?;
     Some(buf)
 }
 
-fn http_post_json(port: u16, path: &str, json: &str, timeout_secs: u64) -> Option<String> {
+fn http_post_json(port: u16, path: &str, json: &str, auth_key: &str, timeout_secs: u64) -> Option<String> {
     use std::io::{Read, Write};
     let mut s = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
@@ -816,8 +825,9 @@ fn http_post_json(port: u16, path: &str, json: &str, timeout_secs: u64) -> Optio
     ).ok()?;
     s.set_read_timeout(Some(Duration::from_secs(timeout_secs))).ok()?;
     s.set_write_timeout(Some(Duration::from_secs(timeout_secs))).ok()?;
+    let auth_header = if auth_key.is_empty() { String::new() } else { format!("Authorization: Bearer {auth_key}\r\n") };
     let req = format!(
-        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n{auth_header}\
 Content-Length: {}\r\nConnection: close\r\n\r\n{json}",
         json.len()
     );
@@ -2044,18 +2054,22 @@ impl AuditLog {
         let _ = f.seek(SeekFrom::Start(tail_start));
         let mut tail = String::new();
         let _ = f.read_to_string(&mut tail);
-        for line in tail.lines().rev() {
+        // Scan all tail lines and return the last valid HMAC found.
+        // A malformed or hmac-less line (e.g. pre-v0.1.4 entry) is skipped, not
+        // used as a stop condition. A break-on-first-bad-line is exploitable: an
+        // attacker appending one malformed entry resets the chain to the genesis value.
+        let mut last_valid: Option<[u8; 32]> = None;
+        for line in tail.lines() {
             if line.trim().is_empty() { continue; }
             if let Ok(v) = serde_json::from_str::<Value>(line) {
                 if let Some(hex) = v.get("hmac").and_then(|h| h.as_str()) {
                     if let Some(bytes) = hex_to_bytes_32(hex) {
-                        return bytes;
+                        last_valid = Some(bytes);
                     }
                 }
             }
-            break;
         }
-        [0u8; 32]
+        last_valid.unwrap_or([0u8; 32])
     }
 
     fn write_scored(&self, path: &Path, sv: &ScoredVerdict, elapsed_us: u64) {
@@ -2640,8 +2654,14 @@ fn list_files_in(dir: &Path, recursive: bool, ext: Option<&str>) -> Vec<String> 
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_file() {
-            // Skip our own intercept staging files so we don't re-process them.
-            if path.extension().and_then(|x| x.to_str()) == Some("aegis-scanning") { continue; }
+            // Skip our own intercept staging files (format: "original.ext.aegis-scanning").
+            // Intercept appends ".aegis-scanning" to the full filename, so our staging
+            // files always have a stem that itself contains an extension (e.g. "foo.json").
+            // A payload deliberately named "evil.aegis-scanning" (stem "evil", no extension)
+            // is NOT our staging file and must be scanned rather than silently skipped.
+            let is_our_staging = path.extension().and_then(|x| x.to_str()) == Some("aegis-scanning")
+                && path.file_stem().map(|s| Path::new(s).extension().is_some()).unwrap_or(false);
+            if is_our_staging { continue; }
             if let Some(e) = ext {
                 if path.extension().and_then(|x| x.to_str()) != Some(e) { continue; }
             }
@@ -2707,20 +2727,46 @@ fn compute_audit_hmac(key: &[u8; 32], prev: &[u8; 32], entry: &[u8]) -> [u8; 32]
     result.into_bytes().into()
 }
 
-fn pick_judge_port() -> u16 {
+fn pick_judge_connection() -> (u16, String) {
     let port_file = dirs_home().join(".aegis/judge.port");
-    // Reuse an existing healthy server's port.
-    if let Ok(s) = fs::read_to_string(&port_file) {
-        if let Ok(p) = s.trim().parse::<u16>() {
-            if http_health(p) { return p; }
+    let key_file  = dirs_home().join(".aegis/judge.apikey");
+
+    // Load (or generate) the API key. The key is stable across restarts so that
+    // multiple aegis processes can share the same llama-server instance.
+    let api_key = if key_file.exists() {
+        fs::read_to_string(&key_file)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Reuse an existing healthy server only if we can authenticate against it.
+    // This prevents a pre-seeded judge.port file from routing judge queries to
+    // an attacker-controlled HTTP listener (A1 in the v0.1.4 adversarial report).
+    if !api_key.is_empty() {
+        if let Ok(s) = fs::read_to_string(&port_file) {
+            if let Ok(p) = s.trim().parse::<u16>() {
+                if http_health_with_key(p, &api_key) { return (p, api_key); }
+            }
         }
     }
-    // Pick a free port via OS assignment.
+
+    // Need a fresh server — generate a new API key and pick a free port.
+    let new_key_bytes = new_audit_key();
+    let new_key: String = new_key_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    let _ = fs::write(&key_file, &new_key);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600));
+    }
+
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .map(|l| l.local_addr().unwrap().port())
         .unwrap_or(8849);
     let _ = fs::write(&port_file, port.to_string());
-    port
+    (port, new_key)
 }
 
 fn unix_now() -> u64 {
@@ -2886,7 +2932,10 @@ fn cmd_verify_log() {
         } else {
             eprintln!("[AEGIS] Line {}: HMAC MISMATCH — entry may have been tampered!", i + 1);
             bad += 1;
-            prev_hmac = expected;
+            // Advance with the STORED value (not recomputed) so that subsequent
+            // entries chained off the tampered value also fail verification.
+            // Using expected here would silently hide cascading tampering.
+            prev_hmac = hex_to_bytes_32(&stored_hmac_hex).unwrap_or(expected);
         }
     }
 
