@@ -121,8 +121,8 @@ To approve this exact command once, run:
 ```
 
 `approve` is a **one-time, hash-based bypass** — the exact command string is SHA-256
-hashed and stored in `~/.aegis/approved_cmds.txt`. On the next attempt the approval is
-consumed and AEGIS blocks again. Use `aegis revoke` to cancel a pending approval.
+hashed and stored as a token file in `~/.aegis/approved/`. On the next attempt the approval is
+atomically consumed and AEGIS blocks again. Use `aegis revoke` to cancel a pending approval.
 
 ```bash
 aegis approve '<cmd>'   # allow this exact command once
@@ -214,8 +214,9 @@ flowchart LR
   *"is this content attacking the agent?"* (injection, jailbreak, spoofing, exfil —
   and crucially, **describing an attack ≠ performing one**) **OR** *"is it pushing the
   agent to act without the user?"* (the infra-impersonation question). A **safe** verdict
-  **vetoes** L1's keyword hits — that's why a security doc that quotes an injection isn't
-  flagged. The judge sees both the head and tail of large documents to defeat
+  **vetoes** T2 (context-sensitive) hits — that's why a security doc that quotes
+  injection syntax isn't flagged — but T1 definitive-injection and credential-taint
+  patterns are quarantined regardless of the judge verdict. The judge sees both the head and tail of large documents to defeat
   truncation-based burial attacks.
 
 If the judge can't run (tiny device, no model, server down), AEGIS **degrades to L1
@@ -271,6 +272,7 @@ aegis install-models   Download the judge model (~1.8 GB)
 aegis approve <cmd>    Allow a blocked command once (one-time bypass)
 aegis revoke  <cmd>    Cancel a pending one-time approval
 aegis status           Tail the audit log
+aegis verify-log       Verify HMAC chain integrity of audit.jsonl
 aegis targets          List protected surfaces
 aegis config           Show effective configuration
 ```
