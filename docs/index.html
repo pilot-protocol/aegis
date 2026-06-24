@@ -754,14 +754,14 @@
   <div class="hero-overline">Pilot Protocol · Open Source · Apache 2.0</div>
   <h1>SkillSpector scans before install.<br><em>AEGIS watches after.</em></h1>
   <p class="hero-sub">
-    NVIDIA's SkillSpector tells you if a skill file is malicious. That's useful.
-    AEGIS covers what happens next — every inbox message, every tool result, every file
-    the agent reads at runtime. 880 KB Rust binary. No cloud. No GPU. Runs on your laptop.
+    AEGIS is a local daemon that intercepts prompt injection at every agent input surface —
+    inbox messages, tool results, skill files, memory notes — before the agent reads them.
+    880 KB Rust binary. No cloud. No GPU. 90% recall, 95% precision on held-out corpus.
   </p>
   <div class="hero-meta">
     <span class="meta-chip">880 KB binary</span>
-    <span class="meta-chip">~3 µs L1 (Aho-Corasick)</span>
-    <span class="meta-chip">~260 ms L2 (Qwen3-1.7B)</span>
+    <span class="meta-chip">~3 µs L1 · ~260 ms L2</span>
+    <span class="meta-chip">90% recall · 95% precision</span>
     <span class="meta-chip">macOS &amp; Linux</span>
   </div>
   <div class="hero-actions">
@@ -802,14 +802,14 @@
     <div class="section-label">The problem</div>
     <h2 class="section-title">Static analysis covers the skill file.<br>Not what arrives through it.</h2>
     <p class="section-body">
-      SkillSpector is great at what it does: scan a skill repository for malicious patterns,
-      excessive permissions, or supply-chain risks — before you install it. It correctly
-      identifies ~26% of skills that carry real security issues.
+      SkillSpector scans skill repositories for malicious patterns, excessive permissions,
+      and supply-chain risks before installation. It correctly flags ~26% of skills with real
+      security issues. That's a meaningful gate.
     </p>
     <p class="section-body">
-      But once a skill is installed and running, it talks to external APIs. Those API responses
-      arrive through a legitimate, already-verified channel. SkillSpector never sees them.
-      Neither does any static analyzer.
+      Once a skill is installed, it calls external APIs. Those responses arrive through a
+      legitimate, already-verified channel. A benign skill can deliver a malicious payload
+      at runtime. SkillSpector never sees it — no static analyzer can.
     </p>
 
     <div class="gap-grid">
@@ -865,9 +865,9 @@
     <div class="section-label">Attack surface</div>
     <h2 class="section-title">Where attacks actually land</h2>
     <p class="section-body">
-      Real-world prompt injection doesn't arrive in a skill's <code style="font-family:var(--mono);font-size:14px;color:var(--orange)">README.md</code>.
+      Prompt injection doesn't arrive in a skill's <code style="font-family:var(--mono);font-size:14px;color:var(--orange)">README.md</code>.
       It arrives in data — tool outputs, network messages, files the agent reads mid-task.
-      These surfaces share zero overlap with what a pre-install scanner sees.
+      These surfaces have zero overlap with what any pre-install scanner sees.
     </p>
 
     <div class="attack-flow">
@@ -922,9 +922,10 @@
     <div class="section-label">Architecture</div>
     <h2 class="section-title">Two-pass cascade: fast then smart</h2>
     <p class="section-body">
-      Most content is benign. The design goal was to keep the false-positive rate below 1%
-      without burning 260ms on every read. AEGIS solves this with a two-layer cascade:
-      flag at wire speed, judge only when something looks suspicious.
+      95% of content is benign. Sending every read to a local LLM would cost 260ms per file.
+      AEGIS runs an Aho-Corasick automaton first — ~3 µs, catches the obvious cases — then
+      escalates to the judge only on hits. The judge's job is to kill false positives,
+      not to do primary detection.
     </p>
 
     <div class="arch-cols">
@@ -980,8 +981,9 @@
     <div class="section-label">Comparison</div>
     <h2 class="section-title">SkillSpector + AEGIS covers the full surface</h2>
     <p class="section-body">
-      These tools are complementary, not competing. SkillSpector is a pre-install gate
-      that audits skill code. AEGIS is an always-on runtime firewall. Run both.
+      These tools are complementary. SkillSpector audits skill code before installation.
+      AEGIS intercepts content at runtime. Run both and you cover the full attack surface —
+      static and dynamic.
     </p>
 
     <table class="vs-table">
@@ -1074,8 +1076,8 @@
     <div class="section-label">Install</div>
     <h2 class="section-title">Get running in two minutes</h2>
     <p class="section-body">
-      AEGIS ships as a single static binary. Install via Homebrew or via the Pilot overlay
-      network (which handles the model and daemon dependencies automatically).
+      Single static binary. Install via Homebrew or via the Pilot Network — which pulls
+      the binary, judge model, and daemon config in one command.
     </p>
 
     <div class="install-tabs">
