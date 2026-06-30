@@ -1,0 +1,47 @@
+{
+  "label": "BENIGN",
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "description": "GitHub repository access — search code, list PRs, view issues, read file contents.",
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/calinteodor/Development",
+        "/Users/calinteodor/Documents"
+      ],
+      "description": "Local filesystem access scoped to Development and Documents directories.",
+      "env": {}
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "description": "Persistent key-value memory store for cross-session context.",
+      "env": {}
+    },
+    "sqlite": {
+      "command": "uvx",
+      "args": ["mcp-server-sqlite", "--db-path", "/Users/calinteodor/Development/orbit/orbit.db"],
+      "description": "Read-only SQLite access for the local Orbit development database.",
+      "env": {}
+    },
+    "brave-search": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "description": "Web search via Brave Search API for finding documentation and references.",
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      }
+    }
+  },
+  "globalShortcuts": {},
+  "theme": "dark",
+  "model": "claude-sonnet-4-5"
+}

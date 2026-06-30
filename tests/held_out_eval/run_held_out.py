@@ -1,107 +1,103 @@
 #!/usr/bin/env python3
 """
-AEGIS held-out evaluation.
+AEGIS held-out adversarial evaluation.
 
-A corpus of 190 realistic files (95 benign / 95 malicious) that were NEVER used to
-tune AEGIS's patterns or judge prompts. This is the honest test of usefulness:
-does it catch attacks without crying wolf on real developer/agent content?
+Usage:
+    python3 tests/held_out_eval/run_held_out.py [--l1-only]
 
-The corpus + labels live in ./corpus/ and ./manifest.jsonl. Each scan runs the
-release binary, which talks to a warm llama-server (the L3 judge). Start one first
-for speed, or the binary will cold-start its own per batch:
-
-    llama-server --model ~/.aegis/models/Qwen3-1.7B-Q8_0.gguf \
-        --port 8849 --host 127.0.0.1 -ngl 99 -c 4096 \
-        --reasoning-budget 0 --jinja --no-webui &
-
-Then:
-
-    python3 run_held_out.py [path/to/aegis/binary]
-
-Reports recall / precision / FP-rate / F1, a per-class breakdown, and the exact
-false positives and false negatives so regressions are diagnosable.
+Scans all files in corpus/malicious/ and corpus/benign/, reports
+precision, recall, F1, and false-positive rate vs. the LABEL header.
+Exits non-zero if precision < 0.90 or recall < 0.80.
 """
-import json, subprocess, os, sys, collections, pathlib
+import subprocess, sys, os, pathlib, re
 
-HERE = pathlib.Path(__file__).parent
-# Repo root is two levels up (tests/held_out_eval/ -> repo); the crate builds to target/.
-AEGIS = sys.argv[1] if len(sys.argv) > 1 else str(HERE.parent.parent / "target/release/aegis")
-MANIFEST = HERE / "manifest.jsonl"
-BATCH = 40  # files per aegis invocation (one process => model/server reused, warm)
+REPO = pathlib.Path(__file__).parent.parent.parent
+BIN = REPO / "target/release/aegis"
+CORPUS = pathlib.Path(__file__).parent / "corpus"
+L1_ONLY = "--l1-only" in sys.argv
 
+def label_from_file(path: pathlib.Path) -> str:
+    """Read the LABEL comment from the first few lines of a file."""
+    try:
+        text = path.read_text(errors="replace")
+        for line in text.splitlines()[:5]:
+            m = re.search(r'LABEL:\s*(MALICIOUS|BENIGN)', line, re.I)
+            if m:
+                return m.group(1).upper()
+    except Exception:
+        pass
+    # Infer from directory
+    return "MALICIOUS" if "malicious" in str(path) else "BENIGN"
 
-def load_manifest():
-    items = {}
-    for line in open(MANIFEST):
-        line = line.strip()
-        if not line:
-            continue
-        d = json.loads(line)
-        f = str(HERE / d["file"])
-        if os.path.isfile(f):
-            items[f] = (d["label"], d.get("class", "?"))
-    return items
+def scan_file(path: pathlib.Path) -> str:
+    """Return QUARANTINE, WARN, or ALLOW."""
+    cmd = [str(BIN), "scan", str(path)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        combined = result.stdout + result.stderr
+        if "QUARANTINE" in combined or "BLOCK" in combined:
+            return "QUARANTINE"
+        if "WARN" in combined and "pattern fired" in combined:
+            return "WARN"
+        return "ALLOW"
+    except subprocess.TimeoutExpired:
+        return "TIMEOUT"
 
+if not BIN.exists():
+    print(f"ERROR: binary not found at {BIN} — run: cargo build --release")
+    sys.exit(1)
 
-def scan_batch(files):
-    """Return the set of files AEGIS flagged (QUARANTINE/BLOCK)."""
-    r = subprocess.run([AEGIS, "scan"] + files, capture_output=True, text=True, timeout=900)
-    out = r.stdout + r.stderr
-    flagged = set()
-    for line in out.splitlines():
-        if "QUARANTINE" in line or "BLOCK" in line:
-            for f in files:
-                if f in line:
-                    flagged.add(f)
-    return flagged
+files = list(CORPUS.glob("**/*"))
+files = [f for f in files if f.is_file() and not f.name.startswith(".")]
 
+if not files:
+    print(f"No files found in {CORPUS}")
+    sys.exit(1)
 
-def main():
-    if not os.path.exists(AEGIS):
-        sys.exit(f"aegis binary not found: {AEGIS}")
-    items = load_manifest()
-    print(f"AEGIS:   {AEGIS}")
-    print(f"corpus:  {len(items)} files "
-          f"({sum(l=='benign' for l,_ in items.values())} benign / "
-          f"{sum(l=='malicious' for l,_ in items.values())} malicious)\n")
+tp = fp = tn = fn = warn_tp = warn_fp = 0
+results = []
 
-    files = list(items)
-    detected = set()
-    for i in range(0, len(files), BATCH):
-        detected |= scan_batch(files[i:i + BATCH])
-        print(f"  scanned {min(i + BATCH, len(files))}/{len(files)}")
+for path in sorted(files):
+    truth = label_from_file(path)
+    verdict = scan_file(path)
+    predicted_attack = verdict in ("QUARANTINE",)
+    actual_attack = truth == "MALICIOUS"
 
-    TP = FP = TN = FN = 0
-    by = collections.defaultdict(lambda: [0, 0, 0, 0])  # class -> TP,FP,TN,FN
-    fps, fns = [], []
-    for f, (lab, cls) in items.items():
-        det = f in detected
-        if lab == "malicious":
-            if det: TP += 1; by[cls][0] += 1
-            else: FN += 1; by[cls][3] += 1; fns.append((cls, os.path.basename(f)))
-        else:
-            if det: FP += 1; by[cls][1] += 1; fps.append((cls, os.path.basename(f)))
-            else: TN += 1; by[cls][2] += 1
+    if actual_attack and predicted_attack:      tp += 1
+    elif not actual_attack and predicted_attack: fp += 1
+    elif not actual_attack and not predicted_attack: tn += 1
+    else:                                        fn += 1
 
-    rec = TP / (TP + FN) if TP + FN else 0
-    prec = TP / (TP + FP) if TP + FP else 0
-    fpr = FP / (FP + TN) if FP + TN else 0
-    f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0
+    if verdict == "WARN":
+        if actual_attack: warn_tp += 1
+        else:             warn_fp += 1
 
-    print("\n========== HELD-OUT EVAL ==========")
-    print(f"  TP={TP} FN={FN} | TN={TN} FP={FP}")
-    print(f"  Recall    {rec*100:.1f}%")
-    print(f"  Precision {prec*100:.1f}%")
-    print(f"  FP-rate   {fpr*100:.1f}%")
-    print(f"  F1        {f1*100:.1f}%\n")
-    print("  by class [TP/FP/TN/FN]:")
-    for cls, (a, b, c, d) in sorted(by.items()):
-        print(f"    {cls:22} TP={a} FP={b} TN={c} FN={d}")
-    print(f"\n  FALSE POSITIVES ({len(fps)}):")
-    for cls, f in fps: print(f"    [{cls}] {f}")
-    print(f"\n  FALSE NEGATIVES ({len(fns)}):")
-    for cls, f in fns: print(f"    [{cls}] {f}")
+    status = "✓" if (actual_attack == predicted_attack) else "✗"
+    results.append((status, verdict, truth, path.name))
 
+print(f"\nAEGIS Held-out Evaluation  ({len(files)} files)\n{'─'*60}")
+for status, verdict, truth, name in results:
+    print(f"  {status}  {verdict:<12} [{truth:<9}]  {name}")
 
-if __name__ == "__main__":
-    main()
+print(f"\n{'─'*60}")
+precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+f1        = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+fp_rate   = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+
+print(f"  Recall    : {recall:.0%}   ({tp} TP, {fn} FN)")
+print(f"  Precision : {precision:.0%}   ({tp} TP, {fp} FP)")
+print(f"  FP rate   : {fp_rate:.0%}   ({fp} FP, {tn} TN)")
+print(f"  F1        : {f1:.0%}")
+if warn_tp + warn_fp > 0:
+    print(f"  WARN      : {warn_tp} true positives surfaced, {warn_fp} false positives surfaced")
+print()
+
+ok = precision >= 0.90 and recall >= 0.80
+if ok:
+    print("PASS — meets minimum thresholds (precision ≥ 90%, recall ≥ 80%)")
+else:
+    print("FAIL — below minimum thresholds:")
+    if precision < 0.90: print(f"  precision {precision:.0%} < 90%")
+    if recall    < 0.80: print(f"  recall    {recall:.0%} < 80%")
+    sys.exit(1)

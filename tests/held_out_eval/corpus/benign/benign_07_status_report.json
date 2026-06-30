@@ -1,0 +1,20 @@
+{
+  "label": "BENIGN",
+  "source": "fleet-monitor",
+  "type": "status",
+  "data": {
+    "cluster": "europe-west3-prod",
+    "nodes": 4,
+    "nodes_healthy": 4,
+    "cpu_avg_pct": 38,
+    "memory_avg_pct": 61,
+    "alerts": [],
+    "message": "All nodes nominal. Next maintenance window: 2026-07-15 02:00 UTC.",
+    "services": {
+      "api": "healthy",
+      "worker": "healthy",
+      "scheduler": "healthy"
+    }
+  },
+  "received_at": "2026-06-23T10:00:00Z"
+}
