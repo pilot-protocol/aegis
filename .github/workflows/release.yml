@@ -15,10 +15,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-latest
             target: aarch64-apple-darwin
             name: aegis-macos-arm64
-          - os: macos-13
+          # macos-13 (the last Intel runner image) was retired by GitHub, so
+          # x86_64 builds cross-compile on the arm64 runner instead. Pure-Rust
+          # deps + the universal macOS SDK make this a plain `--target` build.
+          - os: macos-latest
             target: x86_64-apple-darwin
             name: aegis-macos-x86_64
           - os: ubuntu-latest
