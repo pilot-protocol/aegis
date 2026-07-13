@@ -5,6 +5,7 @@
 use aho_corasick::AhoCorasick;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use sha2::{Digest, Sha256};
+use hmac::{Hmac, Mac};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -23,7 +24,7 @@ use unicode_normalization::UnicodeNormalization;
 // Versioning: bump AEGIS_VERSION when adding patterns.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const AEGIS_VERSION: &str = "0.1.3";
+const AEGIS_VERSION: &str = "0.1.4";
 
 /// Tier 1: high-confidence patterns — scanned everywhere, in all formats.
 /// These are unambiguous injection signals regardless of context.
@@ -309,6 +310,20 @@ fn homoglyph(c: char) -> char {
         c if ('\u{FF21}'..='\u{FF3A}').contains(&c) => {
             (b'a' + (c as u8 - 0x21)) as char // ff21→a, ff22→b, …
         }
+        // Fullwidth punctuation — gaps in the ranges above (FF3B–FF40, FF5B–FF60)
+        // U+FF3B `［` and U+FF3D `］` are fullwidth brackets that tokenize as [ ]
+        // in most LLMs and were not covered, allowing `［system］` to bypass
+        // the [system] marker check and T1 pattern matching entirely.
+        '\u{FF3B}' => '[', // ［ FULLWIDTH LEFT SQUARE BRACKET
+        '\u{FF3D}' => ']', // ］ FULLWIDTH RIGHT SQUARE BRACKET
+        '\u{FF3C}' => '\\', // ＼ FULLWIDTH REVERSE SOLIDUS
+        '\u{FF3E}' => '^', // ＾ FULLWIDTH CIRCUMFLEX ACCENT
+        '\u{FF5B}' => '{', // ｛ FULLWIDTH LEFT CURLY BRACKET
+        '\u{FF5D}' => '}', // ｝ FULLWIDTH RIGHT CURLY BRACKET
+        '\u{FF08}' => '(', // （ FULLWIDTH LEFT PARENTHESIS
+        '\u{FF09}' => ')', // ） FULLWIDTH RIGHT PARENTHESIS
+        '\u{FF1C}' => '<', // ＜ FULLWIDTH LESS-THAN SIGN
+        '\u{FF1E}' => '>', // ＞ FULLWIDTH GREATER-THAN SIGN
         // Armenian letters that look like Latin
         '\u{0531}' => 'u', // Ա ARMENIAN CAPITAL LETTER AYB (looks like U or D)
         '\u{0532}' => 'b', // Բ ARMENIAN CAPITAL LETTER BEN
@@ -478,13 +493,16 @@ impl Verdict {
 // hit the timeout and failed open to 0.0. The server is started lazily on first
 // use and reused (warm prompt cache) across scans and across daemon lifetime.
 
-const JUDGE_PORT: u16 = 8849;
+// Judge port is selected dynamically at startup to avoid port 8849 conflicts.
+// Stored in ~/.aegis/judge.port so multiple aegis instances share one server.
 const JUDGE_MODELS: &[&str] = &[
     "Qwen3-1.7B-Q8_0.gguf",   // primary — validated capable
     "Qwen3-0.6B-Q8_0.gguf",   // last-resort fallback (weak; only if 1.7B absent)
 ];
 
 pub struct IntentJudge {
+    port: u16,
+    api_key: String,
     available: bool,
     model_path: PathBuf,
     server: std::sync::Mutex<Option<std::process::Child>>,
@@ -520,7 +538,10 @@ impl IntentJudge {
         } else {
             eprintln!("[AEGIS] Judge (L2): model not found — L2 disabled (run: aegis install-models)");
         }
+        let (port, api_key) = pick_judge_connection();
         Self {
+            port,
+            api_key,
             available,
             model_path,
             server: std::sync::Mutex::new(None),
@@ -530,6 +551,8 @@ impl IntentJudge {
 
     fn disabled(model_path: PathBuf) -> Self {
         Self {
+            port: 0,
+            api_key: String::new(),
             available: false,
             model_path,
             server: std::sync::Mutex::new(None),
@@ -547,18 +570,19 @@ impl IntentJudge {
         // remaining file pay the full startup wait. This is what turned a single
         // cold-start failure into a multi-minute, no-output directory-scan hang.
         if self.startup_failed.load(Relaxed) { return false; }
-        if http_health(JUDGE_PORT) { return true; }
+        if http_health_with_key(self.port, &self.api_key) { return true; }
 
         let mut guard = match self.server.lock() { Ok(g) => g, Err(_) => return false };
         // Re-check after acquiring the lock (another thread may have started it).
-        if http_health(JUDGE_PORT) { return true; }
+        if http_health_with_key(self.port, &self.api_key) { return true; }
 
         if guard.is_none() {
             match std::process::Command::new("llama-server")
                 .args([
                     "--model", self.model_path.to_str().unwrap_or(""),
-                    "--port", &JUDGE_PORT.to_string(),
+                    "--port", &self.port.to_string(),
                     "--host", "127.0.0.1",
+                    "--api-key", &self.api_key,  // authenticate judge requests
                     "-ngl", "99",            // all layers to Metal
                     "-c", "4096",            // context — system+fewshot+input fits
                     "--reasoning-budget", "0", // suppress Qwen3 thinking tokens
@@ -587,11 +611,11 @@ impl IntentJudge {
                 if matches!(child.try_wait(), Ok(Some(_))) {
                     *guard = None;
                     self.startup_failed.store(true, Relaxed);
-                    eprintln!("[AEGIS] IntentJudge: llama-server exited during startup (port {} in use?) — L2 disabled this run", JUDGE_PORT);
+                    eprintln!("[AEGIS] IntentJudge: llama-server exited during startup (port {} in use?) — L2 disabled this run", self.port);
                     return false;
                 }
             }
-            if http_health(JUDGE_PORT) { return true; }
+            if http_health_with_key(self.port, &self.api_key) { return true; }
             std::thread::sleep(Duration::from_millis(200));
         }
         self.startup_failed.store(true, Relaxed);
@@ -615,7 +639,7 @@ impl IntentJudge {
             "temperature": 0.0,
             "cache_prompt": true,   // reuse the long system/few-shot prefix
         });
-        let resp = http_post_json(JUDGE_PORT, "/v1/chat/completions", &body.to_string(), 15)?;
+        let resp = http_post_json(self.port, "/v1/chat/completions", &body.to_string(), &self.api_key, 15)?;
         let v: Value = serde_json::from_str(&resp).ok()?;
         v.get("choices")?.get(0)?.get("message")?.get("content")
             .and_then(|c| c.as_str()).map(|s| s.to_lowercase())
@@ -785,24 +809,29 @@ first.\" => NORMAL\n\
 // TcpStream client keeps the binary dependency-light.
 
 fn http_health(port: u16) -> bool {
-    http_get(port, "/health", 2).map(|r| r.contains("\"status\":\"ok\"") || r.contains("200")).unwrap_or(false)
+    http_get(port, "/health", 2, "").map(|r| r.contains("\"status\":\"ok\"") || r.contains("200")).unwrap_or(false)
 }
 
-fn http_get(port: u16, path: &str, timeout_secs: u64) -> Option<String> {
+fn http_health_with_key(port: u16, key: &str) -> bool {
+    http_get(port, "/health", 2, key).map(|r| r.contains("\"status\":\"ok\"") || r.contains("200")).unwrap_or(false)
+}
+
+fn http_get(port: u16, path: &str, timeout_secs: u64, auth_key: &str) -> Option<String> {
     use std::io::{Read, Write};
     let mut s = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         Duration::from_secs(timeout_secs),
     ).ok()?;
     s.set_read_timeout(Some(Duration::from_secs(timeout_secs))).ok()?;
-    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let auth_header = if auth_key.is_empty() { String::new() } else { format!("Authorization: Bearer {auth_key}\r\n") };
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth_header}Connection: close\r\n\r\n");
     s.write_all(req.as_bytes()).ok()?;
     let mut buf = String::new();
     s.read_to_string(&mut buf).ok()?;
     Some(buf)
 }
 
-fn http_post_json(port: u16, path: &str, json: &str, timeout_secs: u64) -> Option<String> {
+fn http_post_json(port: u16, path: &str, json: &str, auth_key: &str, timeout_secs: u64) -> Option<String> {
     use std::io::{Read, Write};
     let mut s = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
@@ -810,8 +839,9 @@ fn http_post_json(port: u16, path: &str, json: &str, timeout_secs: u64) -> Optio
     ).ok()?;
     s.set_read_timeout(Some(Duration::from_secs(timeout_secs))).ok()?;
     s.set_write_timeout(Some(Duration::from_secs(timeout_secs))).ok()?;
+    let auth_header = if auth_key.is_empty() { String::new() } else { format!("Authorization: Bearer {auth_key}\r\n") };
     let req = format!(
-        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n{auth_header}\
 Content-Length: {}\r\nConnection: close\r\n\r\n{json}",
         json.len()
     );
@@ -1021,11 +1051,16 @@ pub fn cascade_scan(
         layers.push(j2);
         // Both judge passes returned SAFE.
         // T1 patterns and credential-taint are definitive — judge cannot veto them.
-        // T2-only hits are lower-confidence and the judge veto applies (reduces FP on ctx-sensitive content).
+        // T2-only hits are lower-confidence; judge veto applies EXCEPT for T2_WIN
+        // hits where the matched region lies outside the judge's head+tail window.
+        // For T2_WIN, re-call the judge on an excerpt centered on the actual match
+        // so the veto reflects content the judge actually saw.
         if let Some(ref rule) = l1_rule {
             if l1_score >= T_L1_DEFINITIVE {
-                let is_t2_only = rule.starts_with("T2:") || rule.starts_with("T2_WIN:");
-                if !is_t2_only {
+                let is_t2_head = rule.starts_with("T2:");
+                let is_t2_win = rule.starts_with("T2_WIN:");
+                if !is_t2_head && !is_t2_win {
+                    // T1 / CRED_TAINT / T1_WIN — quarantine unconditionally.
                     return ScoredVerdict {
                         combined: 1.0,
                         verdict: Verdict::Quarantine { rule: rule.clone(), tier: 1 },
@@ -1033,6 +1068,33 @@ pub fn cascade_scan(
                         warn_rule: None,
                     };
                 }
+                if is_t2_win {
+                    // T2_WIN hit came from the sliding window (middle of document).
+                    // The head+tail judge window may not have included the matched region,
+                    // so its SAFE verdict could be uninformed. Extract the region around
+                    // the matched pattern and judge it directly.
+                    let pattern_str = &rule["T2_WIN:".len()..];
+                    let norm_full = normalize(text);
+                    if let Some(match_pos) = norm_full.find(pattern_str) {
+                        let excerpt_start = match_pos.saturating_sub(800);
+                        let excerpt_end = (match_pos + pattern_str.len() + 800).min(norm_full.len());
+                        let excerpt = &norm_full[excerpt_start..excerpt_end];
+                        let j3 = models.l2.judge(excerpt);
+                        if j3.score >= 0.5 {
+                            let j3_rule = j3.rule.clone()
+                                .unwrap_or_else(|| format!("JUDGE:t2win-excerpt:{pattern_str}"));
+                            layers.push(j3);
+                            return ScoredVerdict {
+                                combined: 1.0,
+                                verdict: Verdict::Quarantine { rule: j3_rule, tier: 3 },
+                                layers, warn_rule: None,
+                            };
+                        }
+                        layers.push(j3);
+                        // Excerpt judge also SAFE — veto applies for this T2_WIN hit.
+                    }
+                }
+                // T2 head or T2_WIN with SAFE excerpt judge — veto applies below.
             }
         }
         // T2-only or no L1 hit — SAFE judge veto applies.
@@ -1109,10 +1171,11 @@ impl Scanner {
 
     /// Scan text with both tiers. `ctx_sensitive` enables T2 patterns.
     fn scan_text(&self, text: &str, ctx_sensitive: bool) -> Verdict {
-        // System marker: position-aware — only at line start
-        let lower = text.to_lowercase();
-        if let Some(pos) = lower.find("[system]") {
-            let before = &lower[..pos];
+        // System marker: position-aware — only at line start.
+        // Use normalize() to catch homoglyph variants (е.g. Cyrillic 'е' for 'e').
+        let norm_for_marker = normalize(text);
+        if let Some(pos) = norm_for_marker.find("[system]") {
+            let before = &norm_for_marker[..pos];
             if before.is_empty() || before.ends_with('\n') {
                 return Verdict::Quarantine {
                     rule: "SYSTEM_MARKER".into(),
@@ -1833,7 +1896,13 @@ fn load_extra_targets() -> Vec<WatchTarget> {
             current_ext = None;
         } else if let Some(val) = line.strip_prefix("path = ") {
             let val = val.trim().trim_matches('"');
-            current_path = Some(PathBuf::from(val.replace("~", &dirs_home().to_string_lossy())));
+            let expanded = val.replace("~", &dirs_home().to_string_lossy());
+            if expanded.contains("..") {
+                eprintln!("[AEGIS] ALERT: watch.toml path contains '..' — rejected: {expanded}");
+                current_path = None;
+            } else {
+                current_path = Some(PathBuf::from(expanded));
+            }
         } else if let Some(val) = line.strip_prefix("format = ") {
             current_format = match val.trim().trim_matches('"') {
                 "pilot_inbox" => Format::PilotInbox,
@@ -1964,7 +2033,12 @@ fn quarantine_file(src: &Path, rule: &str) -> io::Result<()> {
 /// Rename-intercept: claim the file before Claude reads it.
 /// Returns the .aegis-scanning path to scan, or None on failure.
 fn intercept(path: &Path) -> Option<PathBuf> {
-    let staging = path.with_extension("aegis-scanning");
+    // Append ".aegis-scanning" to the full filename (not replace extension) so
+    // release() can recover any original extension, not just ".json".
+    let filename = path.file_name()?.to_os_string();
+    let mut new_name = filename;
+    new_name.push(".aegis-scanning");
+    let staging = path.with_file_name(new_name);
     match fs::rename(path, &staging) {
         Ok(_) => Some(staging),
         Err(_) => None, // File may have already been read or removed
@@ -1973,7 +2047,12 @@ fn intercept(path: &Path) -> Option<PathBuf> {
 
 /// Release an intercepted file back to its original name (ALLOW path).
 fn release(staging: &Path) -> io::Result<()> {
-    let original = staging.with_extension("json");
+    let name = staging.file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no filename"))?
+        .to_string_lossy();
+    let original_name = name.strip_suffix(".aegis-scanning")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a staging file"))?;
+    let original = staging.with_file_name(original_name);
     fs::rename(staging, original)
 }
 
@@ -1983,13 +2062,73 @@ fn release(staging: &Path) -> io::Result<()> {
 
 struct AuditLog {
     path: PathBuf,
+    key: [u8; 32],
 }
 
 impl AuditLog {
     fn new() -> Self {
         let dir = dirs_home().join(".aegis");
         fs::create_dir_all(&dir).ok();
-        Self { path: dir.join("audit.jsonl") }
+        let key_path = dir.join("audit.key");
+        let key = {
+            // Atomically create the key file (O_CREAT|O_EXCL) so concurrent processes
+            // don't each generate a distinct key and overwrite each other, causing HMAC
+            // mismatch for entries written by the process whose key lost the race.
+            use std::io::Write as _;
+            let k = new_audit_key();
+            let hex: String = k.iter().map(|b| format!("{:02x}", b)).collect();
+            match fs::OpenOptions::new().write(true).create_new(true).open(&key_path) {
+                Ok(mut f) => {
+                    let _ = f.write_all(hex.as_bytes());
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
+                    }
+                    k
+                }
+                Err(_) => {
+                    // File already exists (another process created it) — load the winner's key.
+                    fs::read_to_string(&key_path)
+                        .ok()
+                        .and_then(|s| hex_to_bytes_32(s.trim()))
+                        .unwrap_or(k) // last resort: use our generated key (log entries won't chain)
+                }
+            }
+        };
+        Self { path: dir.join("audit.jsonl"), key }
+    }
+
+    fn last_hmac(&self) -> [u8; 32] {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = match fs::File::open(&self.path) {
+            Ok(f) => f,
+            Err(_) => return [0u8; 32],
+        };
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        // 8 KB tail: a single audit entry is ~300 bytes; 4 KB could strand the last
+        // entry across the boundary, causing last_hmac() to silently return the
+        // second-to-last entry's HMAC and permanently diverging the chain.
+        let tail_start = len.saturating_sub(8192);
+        let _ = f.seek(SeekFrom::Start(tail_start));
+        let mut tail = String::new();
+        let _ = f.read_to_string(&mut tail);
+        // Scan all tail lines and return the last valid HMAC found.
+        // A malformed or hmac-less line (e.g. pre-v0.1.4 entry) is skipped, not
+        // used as a stop condition. A break-on-first-bad-line is exploitable: an
+        // attacker appending one malformed entry resets the chain to the genesis value.
+        let mut last_valid: Option<[u8; 32]> = None;
+        for line in tail.lines() {
+            if line.trim().is_empty() { continue; }
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                if let Some(hex) = v.get("hmac").and_then(|h| h.as_str()) {
+                    if let Some(bytes) = hex_to_bytes_32(hex) {
+                        last_valid = Some(bytes);
+                    }
+                }
+            }
+        }
+        last_valid.unwrap_or([0u8; 32])
     }
 
     fn write_scored(&self, path: &Path, sv: &ScoredVerdict, elapsed_us: u64) {
@@ -2010,7 +2149,15 @@ impl AuditLog {
             "layers": layers_obj,
             "us": elapsed_us,
         });
-        let mut entry = serde_json::to_string(&entry_val).unwrap_or_default();
+        // HMAC chain: each entry is signed over (prev_hmac || entry_json) so
+        // any tampering with or deletion of log entries is detectable.
+        let entry_json_no_hmac = serde_json::to_string(&entry_val).unwrap_or_default();
+        let prev_hmac = self.last_hmac();
+        let hmac = compute_audit_hmac(&self.key, &prev_hmac, entry_json_no_hmac.as_bytes());
+        let hmac_hex: String = hmac.iter().map(|b| format!("{:02x}", b)).collect();
+        let mut entry_obj = entry_val.as_object().unwrap().clone();
+        entry_obj.insert("hmac".into(), Value::String(hmac_hex));
+        let mut entry = serde_json::to_string(&Value::Object(entry_obj)).unwrap_or_default();
         entry.push('\n');
         if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&self.path) {
             let _ = f.write_all(entry.as_bytes());
@@ -2566,8 +2713,14 @@ fn list_files_in(dir: &Path, recursive: bool, ext: Option<&str>) -> Vec<String> 
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_file() {
-            // Skip our own intercept staging files so we don't re-process them.
-            if path.extension().and_then(|x| x.to_str()) == Some("aegis-scanning") { continue; }
+            // Skip our own intercept staging files (format: "original.ext.aegis-scanning").
+            // Intercept appends ".aegis-scanning" to the full filename, so our staging
+            // files always have a stem that itself contains an extension (e.g. "foo.json").
+            // A payload deliberately named "evil.aegis-scanning" (stem "evil", no extension)
+            // is NOT our staging file and must be scanned rather than silently skipped.
+            let is_our_staging = path.extension().and_then(|x| x.to_str()) == Some("aegis-scanning")
+                && path.file_stem().map(|s| Path::new(s).extension().is_some()).unwrap_or(false);
+            if is_our_staging { continue; }
             if let Some(e) = ext {
                 if path.extension().and_then(|x| x.to_str()) != Some(e) { continue; }
             }
@@ -2601,6 +2754,76 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
+fn new_audit_key() -> [u8; 32] {
+    use std::io::Read;
+    let mut key = [0u8; 32];
+    if let Ok(mut f) = fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut key);
+    }
+    key
+}
+
+fn hex_to_bytes_32(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 { return None; }
+    let bytes: Vec<u8> = (0..hex.len()).step_by(2)
+        .filter_map(|i| u8::from_str_radix(&hex[i..i+2], 16).ok())
+        .collect();
+    if bytes.len() == 32 {
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Some(arr)
+    } else {
+        None
+    }
+}
+
+fn compute_audit_hmac(key: &[u8; 32], prev: &[u8; 32], entry: &[u8]) -> [u8; 32] {
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC key length invariant");
+    mac.update(prev);
+    mac.update(entry);
+    let result = mac.finalize();
+    result.into_bytes().into()
+}
+
+fn pick_judge_connection() -> (u16, String) {
+    // State file stores "port:keyhex\n" — written atomically via tmp+rename so that
+    // two concurrent processes can't observe a half-written state (TOCTOU: previously
+    // key and port were two separate writes with a race window between them where
+    // a reader could see the new key but the old/missing port, or vice versa).
+    let state_file = dirs_home().join(".aegis/judge.state");
+
+    // Try to reuse an existing healthy server.
+    if let Ok(s) = fs::read_to_string(&state_file) {
+        let s = s.trim();
+        if let Some((port_str, key_str)) = s.split_once(':') {
+            if let Ok(p) = port_str.parse::<u16>() {
+                if !key_str.is_empty() && http_health_with_key(p, key_str) {
+                    return (p, key_str.to_string());
+                }
+            }
+        }
+    }
+
+    // Need a fresh server — pick port and key, write atomically.
+    let new_key_bytes = new_audit_key();
+    let new_key: String = new_key_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .map(|l| l.local_addr().unwrap().port())
+        .unwrap_or(8849);
+    let content = format!("{port}:{new_key}\n");
+    let tmp = state_file.with_extension("tmp");
+    if fs::write(&tmp, &content).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+        }
+        let _ = fs::rename(&tmp, &state_file);
+    }
+    (port, new_key)
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -2609,7 +2832,13 @@ fn unix_now() -> u64 {
 }
 
 fn dirs_home() -> PathBuf {
-    PathBuf::from(env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let p = PathBuf::from(&home);
+    // Reject injected HOME values: must be absolute and must not traverse up.
+    if !p.is_absolute() || home.contains("..") {
+        return PathBuf::from("/tmp");
+    }
+    p
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2698,6 +2927,79 @@ fn cmd_approve(cmd: &str) {
 /// which is an atomic POSIX unlink — no TOCTOU window.
 fn cmd_revoke(cmd: &str) {
     let _ = fs::remove_file(approved_dir().join(cmd_hash(cmd)));
+}
+
+fn cmd_verify_log() {
+    let log_path = dirs_home().join(".aegis/audit.jsonl");
+    let key_path = dirs_home().join(".aegis/audit.key");
+
+    if !key_path.exists() {
+        eprintln!("[AEGIS] No audit key at {} — log was written without HMAC chain (pre-v0.1.4)", key_path.display());
+        std::process::exit(1);
+    }
+    let key_hex = fs::read_to_string(&key_path).unwrap_or_default();
+    let key = match hex_to_bytes_32(key_hex.trim()) {
+        Some(k) => k,
+        None => {
+            eprintln!("[AEGIS] Corrupt audit key (expected 64 hex chars)");
+            std::process::exit(1);
+        }
+    };
+    let content = match fs::read_to_string(&log_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[AEGIS] Cannot read audit log: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut prev_hmac = [0u8; 32];
+    let mut ok = 0usize;
+    let mut bad = 0usize;
+
+    for (i, line) in content.lines().enumerate() {
+        if line.trim().is_empty() { continue; }
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("Line {}: JSON parse error", i + 1);
+                bad += 1;
+                continue;
+            }
+        };
+        let stored_hmac_hex = match v.get("hmac").and_then(|h| h.as_str()) {
+            Some(h) => h.to_string(),
+            None => {
+                eprintln!("Line {}: no hmac field (pre-v0.1.4 entry — skip)", i + 1);
+                bad += 1;
+                continue;
+            }
+        };
+        // Recompute HMAC over the entry without the hmac field.
+        let mut entry_obj = v.as_object().unwrap().clone();
+        entry_obj.remove("hmac");
+        let entry_json = serde_json::to_string(&Value::Object(entry_obj)).unwrap_or_default();
+        let expected = compute_audit_hmac(&key, &prev_hmac, entry_json.as_bytes());
+        let expected_hex: String = expected.iter().map(|b| format!("{:02x}", b)).collect();
+        if expected_hex == stored_hmac_hex {
+            ok += 1;
+            prev_hmac = expected;
+        } else {
+            eprintln!("[AEGIS] Line {}: HMAC MISMATCH — entry may have been tampered!", i + 1);
+            bad += 1;
+            // Advance with the STORED value (not recomputed) so that subsequent
+            // entries chained off the tampered value also fail verification.
+            // Using expected here would silently hide cascading tampering.
+            prev_hmac = hex_to_bytes_32(&stored_hmac_hex).unwrap_or(expected);
+        }
+    }
+
+    if bad == 0 {
+        println!("[AEGIS] Audit log intact: {} entries verified", ok);
+    } else {
+        eprintln!("[AEGIS] INTEGRITY FAILURE: {} entries failed, {} ok", bad, ok);
+        std::process::exit(1);
+    }
 }
 
 /// `aegis scan-cmd` — PreToolUse hook: scan a bash command string for exfil patterns.
@@ -2956,6 +3258,7 @@ fn usage() {
     eprintln!("  aegis status              Tail the audit log (recent verdicts)");
     eprintln!("  aegis targets             List the surfaces being protected");
     eprintln!("  aegis config              Show effective configuration");
+    eprintln!("  aegis verify-log          Verify HMAC chain integrity of audit.jsonl");
     eprintln!("  aegis version             Print version");
     eprintln!("");
     eprintln!("Config: ~/.aegis/config.toml   ·   extra watch targets: ~/.aegis/watch.toml");
@@ -3032,6 +3335,7 @@ fn main() {
             println!("[AEGIS] Revoked approval for: {cmd}");
             return;
         }
+        Some("verify-log") => { cmd_verify_log(); return; }
         _ => {}
     }
 

@@ -1,0 +1,27 @@
+{
+  "id": "io.pilot.aegis",
+  "app_version": "0.1.4",
+  "manifest_version": 1,
+  "binary": {
+    "runtime": "go",
+    "path": "bin/aegis-app",
+    "sha256": "c7b3628cb059880323e815b5e1ec68aa4a6490fda3d4b9921b4abc998f6c20ed"
+  },
+  "exposes": [
+    "aegis.scan",
+    "aegis.health",
+    "aegis.status",
+    "aegis.help"
+  ],
+  "grants": [
+    {
+      "cap": "audit.log",
+      "target": "*"
+    }
+  ],
+  "protection": "shareable",
+  "store": {
+    "publisher": "ed25519:FKPJfV2VKXISMNDHGktyB9wqh1bC+/sm/XwKW/EUsiY=",
+    "signature": "FsKZyTmMU5MUeNbKsE0pUVfS/7zzqaYBGCwCq1awSmUaLf28Lttr+QdmmxTflY/0RxVy8ZZl/LggjdeZHxA8DQ=="
+  }
+}
