@@ -216,7 +216,7 @@ fn on_path(name: &str) -> bool {
 // Versioning: bump AEGIS_VERSION when adding patterns.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const AEGIS_VERSION: &str = "0.1.4";
+const AEGIS_VERSION: &str = "0.1.5";
 
 /// Tier 1: high-confidence patterns — scanned everywhere, in all formats.
 /// These are unambiguous injection signals regardless of context.
