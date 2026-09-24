@@ -20,6 +20,198 @@ use std::os::unix::io::RawFd;
 use unicode_normalization::UnicodeNormalization;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Child processes: nothing aegis starts outlives it
+//
+// aegis starts two long-lived children: the L2 llama-server (lazily, on the
+// first judged scan) and curl for `install-models` (a ~1.8 GB download). Both
+// used to outlive aegis on every exit path that skips destructors, reparented
+// to init and still running:
+//   * run_scan's std::process::exit(1) after a flagged file: IntentJudge::drop
+//     never ran, so the server kept the model loaded and its port bound;
+//   * SIGTERM / SIGINT / SIGHUP with the default action (no destructors run),
+//     which is how a caller's timeout or a supervisor stops aegis;
+//   * SIGKILL, or a crash.
+// Every such child goes through `children::spawn`, which records its pid. An
+// atexit hook (runs on process::exit and on a normal return from main) and a
+// SIGTERM/SIGINT/SIGHUP handler stop the recorded set. On Linux each child also
+// carries PR_SET_PDEATHSIG, so the kernel stops it even when aegis is SIGKILLed.
+// A judge server another aegis process started (found healthy through
+// ~/.aegis/judge.state) is never recorded, so it keeps running for its owner.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(unix)]
+mod children {
+    use std::io;
+    use std::process::{Child, Command, ExitStatus};
+    use std::sync::atomic::{AtomicI32, Ordering::SeqCst};
+
+    /// At most this many recorded children at once. aegis has two at most (the
+    /// judge server and one curl); the spare slots cost nothing.
+    const SLOTS: usize = 8;
+    static PIDS: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
+
+    const STOP_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
+
+    fn record(pid: u32) {
+        for slot in PIDS.iter() {
+            if slot.compare_exchange(0, pid as i32, SeqCst, SeqCst).is_ok() {
+                return;
+            }
+        }
+    }
+
+    fn forget(pid: u32) {
+        for slot in PIDS.iter() {
+            let _ = slot.compare_exchange(pid as i32, 0, SeqCst, SeqCst);
+        }
+    }
+
+    /// SIGTERM every recorded child. Only atomics and kill(2), so it is
+    /// async-signal-safe and the signal handler can call it.
+    fn stop_all() {
+        for slot in PIDS.iter() {
+            let pid = slot.swap(0, SeqCst);
+            if pid > 0 {
+                unsafe { libc::kill(pid, libc::SIGTERM); }
+            }
+        }
+    }
+
+    extern "C" fn at_exit() {
+        stop_all();
+    }
+
+    extern "C" fn on_stop_signal(sig: libc::c_int) {
+        stop_all();
+        // Then die of the same signal (it is blocked while this handler runs and
+        // is delivered on return), so a caller still sees "killed by SIGTERM".
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
+    }
+
+    /// Call once, first thing in main. A stop signal that is already ignored
+    /// (nohup, or `aegis daemon &` from a non-interactive shell) stays ignored.
+    pub fn install() {
+        unsafe {
+            libc::atexit(at_exit);
+            for sig in STOP_SIGNALS {
+                let mut old: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(sig, std::ptr::null(), &mut old) == 0
+                    && old.sa_sigaction == libc::SIG_IGN
+                {
+                    continue;
+                }
+                let mut sa: libc::sigaction = std::mem::zeroed();
+                sa.sa_sigaction = on_stop_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                libc::sigemptyset(&mut sa.sa_mask);
+                sa.sa_flags = libc::SA_RESTART;
+                libc::sigaction(sig, &sa, std::ptr::null_mut());
+            }
+        }
+    }
+
+    /// Runs `f` with the stop signals blocked, so a signal can't land between
+    /// fork and `record` and miss the new child. The child would inherit that
+    /// mask (std's posix_spawn path on macOS keeps it), so `spawn` clears it
+    /// again in the child before exec.
+    fn with_stop_signals_blocked<T>(f: impl FnOnce() -> T) -> T {
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            let mut old: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            for sig in STOP_SIGNALS {
+                libc::sigaddset(&mut set, sig);
+            }
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old);
+            let r = f();
+            libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+            r
+        }
+    }
+
+    /// Spawns `cmd` and records the child until `wait`/`forget_reaped`.
+    ///
+    /// On Linux the child also gets PR_SET_PDEATHSIG(SIGKILL), so the kernel
+    /// stops it when aegis dies without running its handlers. The signal is tied
+    /// to the forking thread, not the process: aegis forks every child from its
+    /// main thread, which lives exactly as long as the process.
+    pub fn spawn(cmd: &mut Command) -> io::Result<Child> {
+        use std::os::unix::process::CommandExt;
+        #[cfg(target_os = "linux")]
+        let parent = unsafe { libc::getpid() };
+        unsafe {
+            cmd.pre_exec(move || {
+                // Unblock what with_stop_signals_blocked blocked: a child that
+                // inherits that mask cannot be stopped with SIGTERM at all.
+                let mut none: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut none);
+                libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+                #[cfg(target_os = "linux")]
+                {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    // aegis died between fork and prctl: that signal will never come.
+                    if libc::getppid() != parent {
+                        return Err(io::Error::from_raw_os_error(libc::ESRCH));
+                    }
+                }
+                Ok(())
+            });
+        }
+        with_stop_signals_blocked(|| {
+            let child = cmd.spawn()?;
+            record(child.id());
+            Ok(child)
+        })
+    }
+
+    /// Waits for a child from `spawn`, then stops tracking it.
+    pub fn wait(child: &mut Child) -> io::Result<ExitStatus> {
+        let r = child.wait();
+        forget(child.id());
+        r
+    }
+
+    /// Stops tracking a child from `spawn` that the caller has already reaped.
+    pub fn forget_reaped(child: &Child) {
+        forget(child.id());
+    }
+}
+
+#[cfg(not(unix))]
+mod children {
+    use std::io;
+    use std::process::{Child, Command, ExitStatus};
+    pub fn install() {}
+    pub fn spawn(cmd: &mut Command) -> io::Result<Child> { cmd.spawn() }
+    pub fn wait(child: &mut Child) -> io::Result<ExitStatus> { child.wait() }
+    pub fn forget_reaped(_child: &Child) {}
+}
+
+/// True if `name` is an executable file in a $PATH directory. Used instead of
+/// running `llama-server --version`, which cost a process and 0.2-0.4 s on every
+/// status/targets/scan call (and once hung for over 15 s), only to learn that
+/// the binary exists.
+fn on_path(name: &str) -> bool {
+    let Some(path) = env::var_os("PATH") else { return false };
+    env::split_paths(&path).any(|dir| {
+        let Ok(meta) = fs::metadata(dir.join(name)) else { return false };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            meta.is_file() && meta.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            meta.is_file()
+        }
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // IoCs — baked into the binary at compile time
 // Versioning: bump AEGIS_VERSION when adding patterns.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -527,16 +719,20 @@ impl IntentJudge {
             eprintln!("[AEGIS] Judge (L2): disabled in config — running L1 patterns only");
             return Self::disabled(model_path);
         }
-        let has_server = std::process::Command::new("llama-server")
-            .arg("--version").output().is_ok();
-        let available = model_path.exists() && has_server;
+        // A PATH lookup, not an exec: see on_path.
+        let model_exists = model_path.exists();
+        let available = model_exists && on_path("llama-server");
         if available {
             eprintln!("[AEGIS] Judge (L2): {} via llama-server", model_path.display());
-        } else if model_path.exists() {
+        } else if model_exists {
             eprintln!("[AEGIS] Judge (L2): model found but llama-server not on PATH — L2 disabled");
             eprintln!("[AEGIS]   Install: brew install llama.cpp  (or: brew install pilot-protocol/tap/aegis)");
         } else {
             eprintln!("[AEGIS] Judge (L2): model not found — L2 disabled (run: aegis install-models)");
+        }
+        if !available {
+            // No judge this run: skip the judge.state read/write and health probe.
+            return Self::disabled(model_path);
         }
         let (port, api_key) = pick_judge_connection();
         Self {
@@ -577,7 +773,7 @@ impl IntentJudge {
         if http_health_with_key(self.port, &self.api_key) { return true; }
 
         if guard.is_none() {
-            match std::process::Command::new("llama-server")
+            match children::spawn(std::process::Command::new("llama-server")
                 .args([
                     "--model", self.model_path.to_str().unwrap_or(""),
                     "--port", &self.port.to_string(),
@@ -590,8 +786,7 @@ impl IntentJudge {
                     "--no-webui",
                 ])
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
+                .stderr(std::process::Stdio::null()))
             {
                 Ok(c) => *guard = Some(c),
                 Err(_) => {
@@ -609,6 +804,7 @@ impl IntentJudge {
         while std::time::Instant::now() < deadline {
             if let Some(child) = guard.as_mut() {
                 if matches!(child.try_wait(), Ok(Some(_))) {
+                    children::forget_reaped(child);
                     *guard = None;
                     self.startup_failed.store(true, Relaxed);
                     eprintln!("[AEGIS] IntentJudge: llama-server exited during startup (port {} in use?) — L2 disabled this run", self.port);
@@ -713,7 +909,10 @@ impl Drop for IntentJudge {
         // Only kill a server WE spawned in this process. If we reused one, the
         // handle is None and we leave it warm for the next aegis invocation.
         if let Ok(mut g) = self.server.lock() {
-            if let Some(child) = g.as_mut() { let _ = child.kill(); }
+            if let Some(child) = g.as_mut() {
+                let _ = child.kill();
+                let _ = children::wait(child);
+            }
         }
     }
 }
@@ -2362,15 +2561,28 @@ fn poll_targets(
 /// gap for the background daemon, where stderr isn't visible.
 fn notify(title: &str, body: &str) {
     #[cfg(target_os = "macos")]
-    {
+    let mut cmd = {
         let script = format!("display notification {:?} with title {:?}", body, title);
-        let _ = std::process::Command::new("osascript").args(["-e", &script])
-            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
-    }
+        let mut c = std::process::Command::new("osascript");
+        c.args(["-e", &script]);
+        c
+    };
     #[cfg(target_os = "linux")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("notify-send");
+        c.args(["-u", "critical", title, body]);
+        c
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if let Ok(mut child) = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
     {
-        let _ = std::process::Command::new("notify-send").args(["-u", "critical", title, body])
-            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+        // Reap it, or the daemon collects one zombie per notification for as
+        // long as it runs. The notifier exits on its own within moments.
+        std::thread::spawn(move || { let _ = child.wait(); });
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     { let _ = (title, body); }
@@ -2875,15 +3087,15 @@ fn install_models() {
             eprintln!("[AEGIS] {} exists but looks incomplete ({} bytes) — re-downloading", filename, size);
         }
         eprintln!("[AEGIS] Downloading {} (~{} MB)…", filename, approx_bytes / 1_000_000);
-        let status = std::process::Command::new("curl")
+        let status = children::spawn(std::process::Command::new("curl")
             .args([
                 "--location",       // follow redirects
                 "--fail",           // error on HTTP errors
                 "--progress-bar",   // show download progress
                 "--output", dest.to_str().unwrap_or(""),
                 url,
-            ])
-            .status();
+            ]))
+            .and_then(|mut c| children::wait(&mut c));
         match status {
             Ok(s) if s.success() => {
                 let size = fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
@@ -3297,6 +3509,7 @@ fn cmd_config() {
 }
 
 fn main() {
+    children::install();
     let args: Vec<String> = env::args().collect();
 
     // Commands that don't need the scanner/models loaded.
